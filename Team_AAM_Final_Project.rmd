@@ -1,0 +1,1617 @@
+---
+title: ""
+output: 
+  pdf_document:
+      number_sections: true
+      toc: true
+urlcolor: blue
+---
+
+\newpage
+
+```{r include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message = FALSE, fig.align="center")
+```
+
+
+```{r Libraries and Model Loads}
+library(imputeTS)
+library(ggplot2)
+library(scales)
+library(gridExtra)
+library(knitr)
+library(xtable)
+library(kableExtra)
+library(dplyr)
+library(ggpubr)
+library(GGally)
+library(caret)
+library(mlbench)
+library(tidyverse)
+library(broom)
+library(grid)
+library(naivebayes)
+library(klaR)
+library(xgboost)
+library(heplots)
+library(class)
+
+# Load in the models
+setwd("/Users/marcusdirenzo/Desktop/STAT 441/")
+load("ldaFit.rda")
+load("ldaFitS.rda")
+load("qdaFit.rda")
+load("rdaFit.rda")
+load("lda.final.rda")
+load("lda.test.pred.rda")
+load("logistic.pca.rda")
+load("logistic.interaction.varselect.rda")
+load("logistic.interaction.rda")
+load("logistic.vanilla.rda")
+load("logistic.smooth.rda")
+load("final.logistic.rda")
+load("final.nb.rda")
+load("nb.var.select.rda")
+load("nb.pca.rda")
+load("nb.rda")
+load("rf_selected.rda")
+load("rf_selected_test.rda")
+load("rf_importance_selected.rda")
+load("rf_check.rda")
+load("rf_fit.rda")
+load("knn_best_sub.rda")
+load("knn_selected.rda")
+load("knn_fit_vs.rda")
+load("knn_fit_pc.rda")
+load("knn_fit_all.rda")
+load("xgbTrain_final.rda")
+load("xgb.rfe.rda")
+load("xgbRed.rda")
+load("xgbPred.rda")
+load("xgbImp.rda")
+
+# Read in the data
+dat <- read.csv("Indian Liver Patient Dataset (ILPD).csv", header=F)
+
+# Define function
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+```
+
+```{r Data Reading}
+# Note that 2 = Liver Disease and 1 = No Liver Disease for the diagnosis variable; rescale them
+colnames(dat) <- c("Age", "Gender", "TB", "DB", "ALP", "ALT", "AST", "TP", "ALB", "RAG", "Diagnosis")
+dat$Diagnosis[dat$Diagnosis==1] <- "Liver Disease"
+dat$Diagnosis[dat$Diagnosis==2] <- "No Disease"
+
+# Add the log transformed versions of variables
+dat$logDB <- log(dat$DB)
+dat$logTB <- log(dat$TB)
+dat$logALP <- log(dat$ALP)
+dat$logALT <- log(dat$ALT)
+dat$logAST <- log(dat$AST)
+dat$logTP <- log(dat$TP)
+
+# Split the dataset into training and test (80/20 split)
+set.seed(999)
+perm<-sample(x=nrow(dat))
+train <- dat[which(perm<=465),] # Training set
+test <- dat[which(perm>465),] # Test set
+
+# Impute missing values in RAG with sample mean
+train <- na.mean(train)
+test <- na.mean(test)
+
+# Create the predictor matrix and response
+predictors <- train[,c("Age", "Gender", "logTB", "logDB", "logALT", "logALP", 
+                             "logAST", "logTP", "ALB", "RAG")]
+binary.response <- ifelse(train$Diagnosis=="Liver Disease", y=1, n=0)
+test$binary.response <- ifelse(test$Diagnosis=="Liver Disease", y=1, n=0)
+```
+
+# Introduction
+
+## Background Information
+
+The purpose of this report is to apply the classification framework on the Indian Liver Patient Dataset, taken from the UCI Machine Learning Repository. This dataset is a collection of 583 records taken from a cross-sectional study conducted in the late 2000s within Andhra Pradesh in India. The response variable of interest is determining whether or not a patient has liver disease, coded as a binary variable. Liver disease is a broad medical diagnosis which encompasses various ailments, and is characterized by a minimum of 75\% of liver tissue being affected. The primary function of the liver is detoxification of substances within the blood, metabolization of drugs, the creation of bile to aid in digestion, and the secretion of proteins to promote blood clotting (Hoffman, 2019). Loss of liver function can lead to various health complications, including cancer, liver failure, and death. Dependent on the particular cause of liver disease, different diagnostic tests can be used. These tests include CT scans or ultrasounds in order to assess the tissue quality of the tumour and surrounding cells, a liver biopsy (in which a portion of the liver is removed and examined to assess damage), a complete blood count test to assess the quality and composition of blood, or more specialized medical tests in the case of rare or genetic diseases (Raypole, 2019). 
+
+Common diseases of the liver include cirrhosis, hemochromatosis, nonalcoholic fatty liver disease, and hepatitis (Wedro, 2019). Liver disease is of particular interest in India, as it is the 10th leading cause of death per year, resulting in nearly 260,000 deaths annually (WHO, 2017). Though liver disease can be the result of genetics, many of the risk factors are environmental in nature as well. Individuals who heavily drink alcohol, use contaminated needles, are diabetic or obese, or those who engage in risky sexual behaviours are at increased risk of developing various hepatic disease (Mayo Clinic, 2018). These risk factors are particularly important within the context of India, as cultural norms and lifestyle choices put many individuals at higher risk. Over 135 million individuals in India were classified as obese (Ahirwar \& Mondal, 2018), the prevalence of binge and underage drinking have been increasing in prevalence (Alcoholism in India, 2019), and up to 46\% of hepatitis B and 38\% of hepatitis C cases in India are the related to improper disposal and reuse of used needles and syringes (Vora, 2017).
+
+Compounding the issues related to the risk factors of liver disease in India, there is also less societal focus on health promotion, autonomy and education compared to some western societies (Pati, Sharma, Zodpey, Chauhan, & Dobe, 2012). The result is that many individuals do not recognize they are at risk of developing liver disease, and consequently many cases go undiagnosed. This is particularly problematic as the best treatment for most liver diseases includes lifestyle changes, such as limiting alcohol use, increasing exercise and improving diet, reducing the use of prescription and injection-based drugs, and consistent follow-ups with healthcare professionals. If an individual is not aware of their diagnosis, they may not make the necessary changes required to maintain their health. The majority of hepatic diseases are irreversible, and if left untreated, can lead to other health complications like cirrhosis and a life expectancy of 2 to 3 years (Cunha, 2019). In extreme cases, health interventions such as liver transplants can be used in order to maintain the necessary liver function required for life. However, liver transplants are especially difficult within the Indian healthcare system as a result of privatization of healthcare. Referrals for liver transplantation are carried out through the private healthcare sector rather than the public, which can lead to inconsistent referral times, quality of care, excessive financial cost, and the lack of a centralized organ transplant database (Narasimhan, 2016). Further complicating this issue is the type of organ donors available within India; in the context of organ donation, typically cadavers (deceased individuals) are preferred as the donor in order to reduce the number of operations and organ quality. However in India, cadaver donors only make up 3\% of liver transplants, meaning the remaining 97\% of liver donations come from living individuals, which introduces additional strain on the healthcare system in the form of increased cost, recovery time, and differences in post-operative health (Times of India, 2017).
+
+Clearly liver disease is a highly prevalent and serious healthcare issue within India. By using data-driven approaches and introducing machine learning framework within the healthcare system, improvement in the quality of care can be made. Classification can be used to supplement the decisions made by physicians, resulting in fewer misdiagnosed patients. Additionally, through adequate data exploration, different risk factors can be assessed to best identify the strong risk factors of various liver diseases. This can then be used to guide medical research, help implement public health education and communication strategies, and provide more insight in the best methods of treatment and prevention. The consequences could include improved wait times related to medical care, reduced strain on healthcare professionals, and an overall improvement in the knowledge translation framework between physicians and data scientists.
+
+## Justification and Motivation of Approaches
+
+Though the Indian Liver Patient dataset has been extensively studied within the field of machine learning, the primary focus of many previous studies using this dataset have been on the prediction accuracy of various algorithms. Though many of these algorithms have been shown to be successful classifiers in the context of prediction, less attention has been made to the interpretability and communication of these results within healthcare. Consideration must be made to the audience in which this dataset relies on within the context of any data science problem. Physicians and other healthcare professionals have specialized knowledge related to the diagnosis and treatment of liver disease, but often have limited knowledge or training in statistics. This can result in gaps in communication if the suggested models being used are non-intuitive or lack a suitable interpretation. When considering different choices of models, we must ensure that the underlying framework of assumptions, results, and fitting are all capable of being explained to someone who does not have extensive training in statistics.
+
+In the context of this report, our focus is on models algorithms that are intepretable and can therefore be easily communicated to professionals within the healthcare setting. Consequently, we have chosen to examine 6 different approaches for determining whether or not a patient will have liver disease - Logistic Regression, K-Nearest Neighbours, Discriminant Analysis, Random Forest, Naive Bayes, and Extreme Gradient Boosted Decision Tree ensembles. Though we are still concerned with the predictive accuracy of various approaches, it is equally important to ensure that the underlying method could be justified and explained to our intended audience. Though not all of these models are directly interpretable, the idea of our report is to compare simple interpretable models to more complex statistical approaches, and determine if an optimal trade-off can be determined between interpretability and predictive accuracy.
+
+# Data Pre-Processing 
+
+## Outlier Assessment
+
+To detect outliers, we use Density-Based Spatial Clustering of Applications with Noise (DBSCAN). This density-based clustering algorithm clusters data based on regions with high density of data points and categorizes data points based on their location with respect to other points (Lutins, 2017). Clusters are formed as an n-dimensional shape about a point and only qualify as a cluster when the minimum number of observations lie within said cluster region. Core points lie within $\epsilon$ distance of another point, border points lie within a cluster region but are not within  $\epsilon$ distance of another point, and noise points neither lie within a cluster region nor within $\epsilon$ distance of another point. Noise points are identified as outliers.
+
+There are two parameters to set up DBSCAN: $\epsilon$ and the minimum number of points in a cluster. Sander et al. suggest that a heuristic approach to selecting the minimum number of points in a cluster is setting it as twice the dimension of the data (Sander, Ester, Kriegel & Xu, 1998). From there, use a plot of the k-nearest-neighbor distances, computed for each point plotted against the sorted distances to identify where the curve begins to drastically rise. The k-nearest-neighbor distance at which the plot begins to ascend rapidly is a suggested value for $\epsilon$. 
+
+```{r outlier detection, fig.width=8,fig.height=3}
+# Load libraries required
+library(dbscan)
+library(factoextra)
+
+# Set seed for reproducibility
+set.seed(999)
+
+# Add gender indicator and prepare matrix for dbscan function
+gender.ind.train <- ifelse(train$Gender == "Male",1,0)
+train.outlier.detect <- data.frame(train[,names(train)%in%c(
+  "Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG")], gender.ind.train)
+
+# Check optimal values for epsilon for a given minimum number of points in cluster k
+# k=10
+dbscan::kNNdistplot(train.outlier.detect, k=(2*10))
+abline(h=220)
+
+# Run dbscan
+db <- dbscan(train.outlier.detect,eps=220,minPts=10)
+fviz_cluster(db, train.outlier.detect, geom = "point") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Black points indicate outliers. Based on the DBSCAN plot, there are 28 outliers in the training set. Since excluding outliers could lead to biased results and inflate predictive accuracy, we did not remove any of the outliers. More subject matter expertise is required to decide how to treat and identify the outliers. In the Data Exploration section, certain predictors are log transformed so that extreme values have a lesser impact on our assessment.
+
+## Variable Standardization
+
+Variable standardization was performed for the K-nearest neighbours and linear discriminant analysis methods. Training observations were centered and scaled before fitting the K-nearest neighbours classifier so that the relative distance of observations along different directions are accounted for when considering the nearest neighbouring points. For ease of model interpretation, training observations were scaled before fitting the linear discriminant analysis classifier.
+
+To aid data exploration, the variables DB, TB, ALP, ALT, AST and TP were log transformed so that any potential symmetry in the distribution of these variables were more readily recognizable. 
+
+## Missing Data
+
+There were several approaches that could be undertaken in order to deal with the missing data such as case deletion, mean substitution and regression imputation (Kang, 2013). For data that are missing at random and data that are missing not at random, mean substitution may potentially lead to inconsistent bias and underestimates standard error as it alters the distribution of the data by concentrating more points at the mean of the sample containing no missing data (Kang, 2013). A better approach for remedying missing data is multiple imputation, which involves "creating several different plausible imputed data sets and appropriately combining results obtained from each of them" such that "the uncertainty about the missing data" is accounted for (Sterne et al., 2009).
+
+The data contained four observations out of the 583 observations which had missing values solely in the RAG variable. Since a low proportion of the data were missing, the bias introduced by mean substitution would be minimal, so the missing data were ultimately treated by mean substitution. 
+
+## Training and Test Sets
+
+We used a 80/20 split for the training and test set split with a validation set within the training set. The training set contains 465 observations while the test set contains 118 observations. 
+
+# Data Exploration
+
+## Variable Summary
+
+```{r Data Visualization}
+# Create a data visualization function
+
+# Creates a histogram for a single variable over the entire dataset
+dataviz1 <- function(data, variable, colour, nbin)
+{
+  ggplot(data, aes_string(x=variable)) + 
+    geom_histogram(fill=colour, color='black', bins=nbin, alpha=0.7) + 
+    ylab("Frequency") + xlab(variable) + 
+    ggtitle(paste("Histogram of", variable, "(All Individuals)")) +
+    theme(plot.title = element_text(size = 10))
+}
+
+# Creates separate density plots by diagnosis status
+dataviz2 <- function(data, variable, colour2){
+  ggplot(data, aes_string(x=variable)) + geom_density(fill=colour2, alpha=0.8) + 
+    ylab("Density") + xlab(variable) + 
+    ggtitle(paste("Density of", variable, "by Diagnosis")) + facet_grid(rows=vars(Diagnosis)) +
+    theme(plot.title = element_text(size = 10))
+}
+
+# Create a table function which produces summaries for a variable for each group
+tablefn <- function(v1, v2){
+  t1 <- as.array(summary(v1))
+  t2 <- as.array(summary(v2))
+  names(t1) <- c("Minimum", "1st Quartile", "Median", "Mean", "3rd Quartile", "Maximum")
+  names(t2) <- c("Minimum", "1st Quartile", "Median", "Mean", "3rd Quartile", "Maximum")
+  knitr::kable(list(t1,t2), caption = "Summary for Non-Diseased Patients (left) VS Diseased (right)", 
+               col.names = c("Summary Statistic", "Value"), digits=2) %>% kable_styling(latex_options="hold_position")
+}
+
+# Create subsets of training set for diseased and non-diseased (to be used in tablefn later)
+train_disease <- subset(train, Diagnosis=="Liver Disease")
+train_control <- subset(train, Diagnosis=="No Disease")
+
+# Combine results; this produces a histogram (all data), two densities (one per diagnosis), and a table (one per diagnosis)
+dataviz <- function(data, variable, colour, colour2, nbin, v1, v2){
+ p1 <- dataviz1(data, variable, colour, nbin=nbin)
+ p2 <- dataviz2(data, variable, colour2)
+ grid.arrange(p1, p2, nrow=1)
+ tablefn(v1, v2)
+}
+```
+
+The dataset contains a total of 10 predictor variables, each explained in the subsequent sections below. The 11th variable in the dataset refers to the diagnosis status of the patient (=1 if the patient has liver disease diagnosis, and 0 otherwise). **Note that the entirety of this data visualization and exploration occurs on the training set only**. This is done intentionally to ensure the data within the test set is totally hidden, and does not 'contaminate' our knowledge of the problem at hand.
+
+In the context of this report, 'cases' refer to individuals with a liver disease and 'controls' refer to those with no disease. In the training set, a total of 142 individuals did not have liver disease and 323 have a reported disease. The total sample size is 465 observations. For data with a highly skewed distribution, the natural logarithmic transform was applied to spread out the measured values. These variables are denoted with the "log" prefix. Most of the measurements are reported in terms of g/dL (grams per deciliter) or IU/L (international units per liter), unless otherwise stated.
+
+Developing data visualizations provides a more thorough understanding of the underlying data, particularly in terms of the relationship between each predictor and the response variable of interest. By comparing the densities of each predictor between the two diagnosis groups, different trends can be assessed which can provide intuition for variable importance and effects during model fitting. Of primary interest is identifying covariates with considerably different densities between the two groups, as this implies that covariate has a strong discrimination effect and may therefore be useful in classifying patients.
+
+### Age
+
+Age refers to the age of the patient at the time of data collection. In the methodology of the study, all individuals aged 90 years and older were assigned an age label of 90.
+
+```{r fig.asp=0.45}
+dataviz(data=train, variable="Age", colour="coral4", colour2="coral3", nbin=10, train_control$Age, train_disease$Age)
+```
+
+The majority of the study participants were between 25 to 60 years of age, with the maximum age being 90 years and the minimum being 4 years. The overall distribution is relatively symmetric and appears normally distributed. In general, the cases appear to have a slighter higher age than the controls within the training set, with the average age being 41.62 years in the controls VS 46.19 years in the cases. Research suggests that in general, the risk of liver disease increases with age (Kim, Kisseleva, & Brenner, 2015), so these results are relatively expected. Given the ages densities are not drastically different between groups, age alone may not be an important discriminator for the disease presence. However, given age is potentially related to many other predictors of interest, which may result in interaction, age is further explored in the subsequent section of the report.
+
+### Gender
+
+Gender refers to the gender of the patient, classified as either male or female.
+
+```{r fig.asp=0.45, fig.align="center"}
+ggplot(train, aes(x=train$Gender, fill=Diagnosis)) + 
+  geom_bar(color='black', alpha=0.6) + 
+  ylab("Frequency") + xlab("Gender") + ggtitle("Summary of Gender by Diagnosis") +
+  scale_fill_manual(values=c("darkorchid4", "blue"))
+
+kable(table(train$Gender, train$Diagnosis), 
+      caption="Contingency Table of Gender and Diagnosis")
+```
+
+The majority of study participants were male (361/465) in the training set, resulting in a majority in both the case and control group. Of the 104 females, we see that 62 individuals had liver disease (60\%) whereas 72\% of the males in the training data had liver disease. This may suggest an association between gender and liver disease, particularly that males are more susceptible than females. Many of the associated risk factors for liver diseases, such as obesity, alcohol intake, drug use and biological differences in protein levels are dependent on sex, which may partially explain this relationship (Guy & Peters, 2013). Interactions involving sex and other covariates are explored later in the report, prior to model fitting.
+
+### Total Bilirubin (TB)
+
+```{r fig.asp=0.45}
+dataviz(train, "logTB", "aquamarine4", "aquamarine3", nbin=6, train_control$logTB, train_disease$logTB)
+```
+
+Bilirubin is a chemical which occurs as a result of red blood cells breaking down, measured through clinical tests in milligrams per deciliter (mg/dL). Total bilirubin is assessed by summing together the indirect and direct bilirubin measurements on a patient. Often bilirubin levels are used to assess liver function, since the liver takes in bilirubin and breaks it down for excretion (Mayo Clinic, 2018). Normal measurements for adults are approximately 1.2 mg/dL (0.18 on the log scale), which is where the mode of the data is contained roughly for cases and controls.
+
+In general, total bilirubin levels which deviate greatly from typical measurements have been found to be associated with liver issues (Mayo Clinic, 2019), particularly those which are above average. Based on training data, we can see that total bilirubin levels appear to higher in individuals with reported liver disease. Evidently the cases have a longer right tail in the distribution, which is seen by the relatively large difference in the group means. In general, nearly all of the patients with very high logTB levels seem to be diseased, which means within this range of the variable, classification should be more deterministic.
+
+### Direct Bilirubin (DB)
+
+```{r fig.asp=0.45}
+dataviz(train, "logDB", "cadetblue4", "cadetblue3", nbin=5, train_control$logDB, train_disease$logDB)
+```
+
+Direct bilirubin (measured in mg/dL) is similar to total bilirubin, but excludes the amount of indirect bilirubin in the blood. The results are similar to what was observed for total bilirubin levels, in that cases appear to have higher values than the controls. Again, the difference in distribution between the two groups may suggest that bilirubin is a useful predictor in determining the presence of liver disease.
+
+### Alkaline Phosphotase (ALP)
+
+```{r fig.asp=0.45}
+dataviz(train, "logALP", "darkolivegreen", "darkolivegreen4", nbin=10, train_control$logALP, train_disease$logALP)
+```
+
+Alkaline phosphotase (ALP measured in IU/L) is an enzyme found within bone cells and the liver, and is also a common biomarker used to assess liver function, measured via a blood test. Typically higher levels of ALP are associated with liver dysfunction, as damaged or diseased liver cells often secrete increased amounts of ALP into the bloodstream (Lab Tests Online, 2019). Similar to other measurements, ALP is measured in mg/dL.
+
+In the context of the training data, we see that ALP levels tend to appear somewhat similar between the cases and controls, though there is a higher degree of spread in the cases and a longer right tail. In general, the spread is relatively large in the combined data set which is unlike some of the previous measurements. Despite the differences in distribution between ALP levels in the cases and the controls, caution should be made from these results alone, as ALP can also be a marker of other diseases. Since many potential confounders were not collected in this study, the results we see related to ALP should be interpreted with caution as we do not know the diagnosis of other diseases within this cohort of patients.
+
+### Alanine Aminotransferase (ALT)
+
+```{r fig.asp=0.45}
+dataviz(train, "logALT", "firebrick", "firebrick3", nbin=8, train_control$logALT, train_disease$logALT)
+```
+
+Similar to ALP, alanine aminotransferase is an enzyme found in liver and protein cells. ALT is an enzyme responsible for adequate liver function, and damaged cells will leak this enzyme into the bloodstream. The result is that individuals with liver disease tend to have increased ALT levels relative to individuals with healthy livers (Medline Plus, 2019).
+
+In the context of the training data, this trend is also apparent. Individuals with liver disease tend to have higher levels of ALT relative to controls, and the spread in observed ALT levels tends to be much wider in the cases. Normal ALT levels range from 19 to 33 IU/L, which is roughly where we see the mode in each of the datasets (roughly 3 to 3.5 on the log-scale), though ALT levels often vary by sex and age (Blocka, 2018).
+
+### Aspartate Aminotransferase (AST)
+
+```{r fig.asp=0.45}
+dataviz(train, "logAST", "deeppink4", "deeppink3", nbin=8, train_control$logAST, train_disease$logAST)
+```
+
+Aspartate Aminotransferase is measured in IU/L and is an enzyme found in the blood and liver cells, similar to the previous proteins. Like AST and ALP, increased levels of AST result from damaged liver cells, and so individuals with liver disease often have higher blood levels of AST relative to those with a healthy liver (WebMD, 2019).
+
+This trend is evident in the training set, as we see considerably higher average levels of AST in cases rather than controls. The evident difference in distribution among the different groups also gives insight that AST is an important predictor of liver health, and therefore may be an important predictor in the classification problem of interest.
+
+### Total Protiens (TP)
+
+```{r fig.asp=0.45}
+dataviz(train, "logTP", "goldenrod4", "goldenrod3", nbin=8, train_control$logTP, train_disease$logTP)
+```
+
+Total protein refers to the combined totals of albumin and globulin in the bloodstream, measured in g/dL. Normal levels fluctuate between 6 to 8 grams per deciliter (roughly 1.8 to 2.1 on the log-scale), which is where the mode of the training set is observed for each group. Unlike most other blood proteins, liver diseases may cause elevated or decreased total protein levels dependent on the underlying diagnosis (Health Line, 2016).
+
+Within the data, we see that the cases and control have extremely similar distributions of total protein levels. This similarity in distribution may suggest that total protein may not be a strong predictor of liver disease, as the values seem similar even after conditioning on diagnosis. Furthermore, the observed range of values is very small which may make class separation difficult to accomplish.
+
+### Albumin (ALB)
+
+```{r fig.asp=0.45}
+dataviz(train, "ALB", "lightpink4", "lightpink3", nbin=8, train_control$ALB, train_disease$ALB)
+```
+
+Albumin is a protein produced by the liver and secreted into the bloodstream in order to retain fluid and transport substances like vitamins or enzymes. Albumin levels tend to be lower in individuals with liver diseases as a result of decreased production in liver cells, however damage to the liver must be fairly severe before a considerable drop in albumin levels are observed (Lab Tests Online, 2019).
+
+The levels of ALB tend to be somewhat lower for the cases relative to the controls, though this difference is not relatively large. This may suggest that of the individuals in the study who had observed liver disease, the severity of their prognosis may have been relatively mild since ALB was still being adequately produced by the liver. As a result, ALB alone may not be a strong indicator of liver disease aside from the cases in which their liver disease has progressed significantly over time. 
+
+### Ratio of Albumin to Globulin (RAG)
+
+```{r fig.asp=0.45}
+dataviz(train, "RAG", "sienna4", "sienna3", nbin=8, train_control$RAG, train_disease$RAG)
+```
+
+The ratio of albumin to globulin is similar to the measurement of total protein, but instead reflects the ratio of albumin to globulin levels observed in the bloodstream. The expected ratio of albumin:globulin is expected to be near 1, and values considerably below 1 indicate poor liver function (Health Line, 2019).
+
+Looking to the training data, the results follow what is expected. We see that the cases tend to have a lower ratio than the controls (though the magnitude of difference is small), and the modes fall within the typical expected range. The dissimilarity in RAG values implies it will be useful in the context of prediction, albeit less so than some of the previously examined covariates. In the cases, we note some outlying points on the right hand side in which individuals have considerably higher RAG values, which may be the result of a combination of medical conditions or measurement error.
+
+# Analysis
+
+## Methodology
+
+Multiple models of each class will be fit in order to consider different customizable options, such as hyperparameter tuning, the effect of PCA, influence of variable selection, etc. Of these fitted models within each class, the optimal choice will be chosen and justified. Each of the chosen models will then be compared in the final section of the report to select the final classifier of interest. The models considered in this report are discriminant analysis, Naive Bayes, K-Nearest Neighbours, XGBoost and Random Forest. Logistic regression was also considered but performed very poorly (test accuracy of only 0.2) and was therefore put into the appendix instead.
+
+When fitting each of the models, we use repeated 5-fold cross-validation on the training set. This gives 25 out-of-sample prediction accuracy estimates, which can then be examined to determine the volatility and generalizability potential of the model. The goal is to find the optimal trade-off between interpretability, parsimony and interpretability for a clinician. The metrics used to assess each of the models are the out-of-sample prediction accuracy (which we want to maximize), and the the associated Cohen's $\kappa$ values. $\kappa$ is important in this context since our data is highly skewed; 70\% of the training set observations are diseased. Cohen's Kappa value accounts for this by modeling both the observed and expected accuracy (originally refered to as *agreement* between responses), and therefore accounting for accuracy attributed to random chance. This means in the simplest terms, $\kappa$ measures how much better a classifier is relative to one that randomly guesses the labels. The values themselves are not directly interpretable, but Cohen suggested values $\le$ 0 as indicating no agreement and 0.01 - 0.20 as none to slight, 0.21 - 0.40 as fair, 0.41 - 0.60 as moderate, 0.61 - 0.80 as substantial, and 0.81 - 1.00 as almost perfect agreement (McHugh, 2012).
+
+Variable selection will be dependent on the chosen method, but will usually be implemented via recursive feature elimination (RFE) with Random Forest via the caret() package. In this approach, a model is fit to the full training set and its performance is assessed, along with variable importance. Then for specified subset size $S$ of the predictors, the $S$ most important variables are used to fit a nested model, in which the predictive performance is also assessed. By doing this for all values of $S$ in 1 to $p$ (the number of predictors), the optimal value of $S$ can be chosen. The final selected variables are the $S$ most important variables based on the initial fit, and then the model gets re-fit with only these $S$ important predictors (Kuhn, 2009). Other models, such as logistic regression, use a forward stepwise approach to conduct variable selection.
+
+## K-Nearest Neighbours (KNN)
+
+### About K-Nearest Neighbor (KNN)
+
+KNN is a non-parametric approach that aims to improve on other parametric classifiers by eliminating the dependence on parametric assumptions. For a given observation, this method examines the class labels for the k-nearest observations and assigns a label based on the majority vote among these k neighbors. In this context, it implies that the diagnosis label for an individual will depend upon the diagnosis label for other individuals who have similar characteristics and medical measurements as them.  Therefore, the decision boundaries created by this method are irregular and jagged. 
+
+### Model Fitting
+
+Three different variations of the KNN model will be considered in this report, and their performance based on repeated 5-fold cross validation on the training set will be assessed. These models include KNN with all the original predictor variables, KNN with selected variables from variable selection, and KNN using principal component analysis on the predictor variables. All three models will be tuned for the parameter of interest k which specifies the number of nearest neighbors to consider when classifying each observation. When k is high, the model fit will have a low variance and high bias with smoother boundaries, and when k is low, the model fit will have a high variance and low bias with very rough boundaries. Hence, the parameter k will be tuned with respect to accuracy for each of the three individual models. The values for out-of-sample prediction errors and kappa for each of these three models will be considered then to select the final KNN model. Log transformations on predictors resulted in worse performance, and thus were not used.
+
+### Model Assumptions
+
+KNN assumes that the entire neighbourhood is uniform with respect to the probability distribution for the classes. Therefore, the model is subject to the curse of dimensionality. This becomes a problem when the number of covariates (p) is high, as the points are more and more distant from each other. Removing irrelevant features could potentially solve the problem therefore variable selection will be performed for one of the variations of KNN, to only retain the most important and relevant predictor variables. Another potential problem that can arise from this assumption would be due to the multicollinearity between the predictor variables in our data. This means that some variables might contain extra weight on the prediction than we desire. As a potential solution, KNN will be performed after using principal component analysis on the data for one of the variations. Additionally, all the predictor variables will be first standardized to ensure that distance has same meaning in all directions.
+
+### Results
+
+```{r,eval=FALSE}
+
+##check overall variable importance
+
+##Preprocessing
+train2 <- train[,c("Age", "Gender", "TB", "DB", "ALT", "ALP", 
+                             "AST", "TP", "ALB", "RAG", "Diagnosis")]
+train2$Gender <- as.numeric(train2$Gender)
+train2$Diagnosis <- as.factor(train2$Diagnosis)
+
+##Fitting model
+trctrl <- trainControl(method= "repeatedcv", repeats= 5, number = 5, savePredictions = T)
+knn_all_grid <- expand.grid(k=c(5*c(1:15)))
+knn_fit_all <- train(Diagnosis~. , data = train2, method="knn", preProcess= c("center","scale"), trControl=trctrl, tuneGrid = knn_all_grid)
+
+```
+
+
+```{r,eval=FALSE}
+
+
+##Find the best subset
+##Preprocessing
+train2x <- train2[,names(train2) != "Diagnosis"]
+preproc_xvals <- preProcess(train2x)
+preproc_train2x <- predict(preproc_xvals, train2x)
+preproc_train2x <- as.data.frame(preproc_train2x)
+custom_knn_Diagnosis <- ifelse(train2$Diagnosis=="Liver Disease",y="Liver.Disease",n="No.Disease")
+custom_knn_Diagnosis <- as.factor(custom_knn_Diagnosis)
+
+##Fitting model
+rfectrl <- rfeControl(functions = caretFuncs, method = "repeatedcv", repeats = 1, number =  5, verbose = FALSE)
+subsets <- c(1:10)
+knn_best_sub <- rfe(preproc_train2x, custom_knn_Diagnosis, sizes = subsets, rfeControl = rfectrl, method="knn")
+
+
+```
+
+
+```{r,fig.width=10,fig.height=4}
+
+##Importance Results
+knn_importance_all <- varImp(knn_fit_all, scale=FALSE)
+p1<- ggplot(knn_importance_all)+ggtitle("Variable Importance")+theme(plot.title = element_text(hjust = 0.5))
+
+##Results
+var_names <- knn_best_sub$control$functions$selectVar(knn_best_sub$variables,10)
+p2<- ggplot(knn_best_sub)+ggtitle("Recursive Feature Elimination")+theme(plot.title = element_text(hjust = 0.5))+scale_x_continuous(name="Cumulatively Added Variables",breaks=c(1:10),labels=var_names)
+
+grid.arrange(p1, p2, ncol=2, nrow=1)
+
+```
+
+It can be seen in the left plot that the variables contain different levels of importance for the KNN model. This indicates that the model can be potentially improved by making it more parsimonious with only the most important and relevant predictor variables getting considered for the model fit. The plot on the right is an output from conducting a recursive feature elimination on a KNN model using 5-fold cross validation. This plot shows that the accuracy of the model increases initially as more variables are cumulatively added to the model, however, it starts to reduce eventually once more and more predictors are added to perform the model fit. The potential reason for this pattern could be the curse of dimensionality. We can achieve the best model in terms of accuracy by including the variables "AST", "TB", "DB", and "ALP".
+
+
+```{r,eval=FALSE}
+
+##Preprocessing
+train3 <- train[,c("AST", "TB", "DB", "ALP","Diagnosis")] 
+train3$Diagnosis <- as.factor(train3$Diagnosis)
+
+##Fitting model
+trctrl <- trainControl(method= "repeatedcv", repeats = 5, number = 5, savePredictions = T)
+knn_grid <- expand.grid(k=c(5*c(1:15)))
+knn_fit_vs <- train(Diagnosis~. , data = train3, method="knn", preProcess= c("center","scale"), trControl=trctrl, tuneGrid = knn_grid)
+
+```
+
+
+
+
+```{r,eval=FALSE}
+
+
+##Preprocessing
+train2 <- train[,c("Age", "Gender", "TB", "DB", "ALT", "ALP", 
+                             "AST", "TP", "ALB", "RAG", "Diagnosis")]
+train2$Gender <- as.numeric(train2$Gender)
+##train2$Diagnosis <- ifelse(train2$Diagnosis=="Liver Disease", y=1, n=0)
+train2$Diagnosis <- as.factor(train2$Diagnosis)
+
+##Fitting model
+trctrl <- trainControl(method= "repeatedcv", repeats= 5, number = 5, savePredictions = T)
+knn_grid <- expand.grid(k=c(5*c(1:15)))
+knn_fit_pc <- train(Diagnosis~. , data = train2, method="knn", preProcess= c("center","scale","pca"), trControl=trctrl, tuneGrid = knn_grid)
+
+```
+
+
+```{r,fig.width=10,fig.height=6}
+
+p1<- ggplot(knn_fit_all)+ggtitle("Parameter Selection with All Variables")+
+  theme(plot.title = element_text(hjust = 0.5,size=8))+ylab("Accuracy")+xlab("Neighbours")
+p2<- ggplot(knn_fit_vs)+ggtitle("Parameter Selection with Selected Variables")+
+  theme(plot.title = element_text(hjust = 0.5,size=8))+ylab("Accuracy")+xlab("Neighbours")
+p3<- ggplot(knn_fit_pc)+ggtitle("Parameter Selection with PCA")+
+  theme(plot.title = element_text(hjust = 0.5,size=8))+ylab("Accuracy")+xlab("Neighbours")
+
+grid.arrange(p1, p2, p3, ncol=2, nrow=2, 
+             top = textGrob("Parameter Selection via Out-of-Sample Accuracy", 
+                            gp=gpar(fontsize=12)))
+
+```
+
+In tuning each of the models for the parameter k, we see that the accuracy initially increases as we increase the value of k and starts to decrease eventually when the value of k becomes too high. This is expected since the model becomes highly biased with a large k. KNN with all variables is more sensitive to low values of k compared to KNN with selected variables because for KNN with all variables the points are more distant from each other, so a smaller k might cause the proportion of points considered from the opposite class to be higher than a larger k. KNN with PCA is relatively robust to higher values of k. The predictive accuracy for KNN with selected variables seems to be relatively higher compared to the other two models under the selection of optimal tuning parameter k. 
+
+
+```{r echo=FALSE, results = "hide", fig.width=10, fig.height=6}
+# Now, create summary tables
+oos.errors <- c(round(getTrainPerf(knn_fit_all)[1,1],3), 
+                round(getTrainPerf(knn_fit_vs)[1,1],3),
+                round(getTrainPerf(knn_fit_pc)[1,1],3))
+kappa.vals <- c(round(getTrainPerf(knn_fit_all)[1,2],3), 
+                round(getTrainPerf(knn_fit_vs)[1,2],3),
+                round(getTrainPerf(knn_fit_pc)[1,2],3))
+
+labels <- c("KNN with All Predictors", "KNN with Variable Selection","KNN with PCA")
+summary.table <- data.frame(labels, oos.errors, kappa.vals)
+colnames(summary.table) <- c("Model", "Mean Out of Sample Accuracy", "Mean Kappa Value")
+t1 <- tableGrob(summary.table, rows=NULL, theme=ttheme_default(base_size = 10))
+
+# Create error plot; get Accuracy and Kappa per model
+df <- data.frame(
+  Indices=rep(1:25, 3),
+  Accuracy=c(knn_fit_all$resample$Accuracy, knn_fit_vs$resample$Accuracy, knn_fit_pc$resample$Accuracy),
+  Kappa = c(knn_fit_all$resample$Kappa, knn_fit_vs$resample$Kappa, knn_fit_pc$resample$Kappa),
+  Model=c(rep("KNN with All Predictors", 25),
+          rep("KNN with Variable Selection", 25),
+          rep("KNN with PCA",25)))
+
+p1 <- ggplot(data = df, aes(x=Indices, y=Accuracy)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Prediction Accuracy by Model") + theme(legend.position="top") +
+  theme(plot.title = element_text(size=10), legend.text=element_text(size=8)) + guides(colour=guide_legend(nrow=2))
+
+p2 <- ggplot(data = df, aes(x=Indices, y=Kappa)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Kappa Values by Model") + 
+  theme(legend.position = "none", plot.title = element_text(size=10))
+
+g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+
+mylegend<-g_legend(p1)
+
+grid.arrange(arrangeGrob(p1 + theme(legend.position="none"),
+                         p2 + theme(legend.position="none"),
+                         nrow=1), mylegend, t1,  nrow=3, heights=c(5, 2, 4))
+```
+
+The graph shows the out-of-sample predictive accuracies for all 3 models to be very similar to each other. KNN with PCA has the lowest predictive accuracy, and KNN with variable selection has the highest predictive accuracy out of all three models.  In terms of the Kappa values, KNN with variables selection does a significantly better job than the other two models. Overall, KNN with variable selection has the highest predictive accuracy and highest kappa values. This shows that variable selection proved to be useful in terms of dealing with curse of dimensionality which potentially caused the results of the other two models to be worse. 
+
+Therefore, we choose KNN with variable selection as our final model for KNN and it contains the variables "AST", "TB", "DB", and "ALP", of which we plot the importance below. The optimal tuning parameter selected for the model was $k= 25$.
+
+
+```{r, fig.width=8,fig.height=3}
+
+knn_importance_vs <- varImp(knn_fit_vs, scale=FALSE)
+
+ggplot(knn_importance_vs)+ggtitle("Variable Importance for Selected Variables")+theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+All 4 variables used for this model have high and equal importance. The other variables dropped had lower importance compared to these variables, hence the subset of variables selected seems to be very relevant and important. 
+
+## Discriminant Analysis (DA)
+
+### About Discriminant Analysis
+
+Discriminant analysis is a parametric statistical learning method that uses a Bayesian approach to calculate the posterior probability of each class $P(Y=k|\mathbf{X}=\mathbf{x})$. It assumes that we have a priori knowledge of the distribution of classes and the functional form for the conditional distribution of the predictors within each class, then applies Bayes' rule to calculate the posterior probability of each class. As such, discriminant analysis is a generative classifier. 
+
+Discriminant analysis is a method frequently used for classification involving three or more classes. It is of particular interest here as it is a relatively simple model, with low computational complexity and the ability to be highly customized. LDA can be combined with methods such as PCA, regularization, non-parametric smoothing or feature selection in order to improve performance. 
+
+### Model Fitting
+
+Three variants of discriminant analysis were considered and were assessed based on their performance on repeated 5-fold cross-validation on the training set. We considered linear discriminant analysis (LDA), quadratic discriminant analysis (QDA) and regularized discriminant analysis. These methods were also considered with variable selection, but the performance of these models were significantly worse and thus have been omitted from the report. Similarly, log transformations resulted in worse performance and thus the original predictors were used.
+
+### Model Assumptions
+
+In general, discriminant analysis methods assume that each class probability densities of $X|Y=k$ are multivariate Gaussian distributed (Hastie, Tibshirani, Friedman, 2009). LDA further assumes homoscedasticity of all the class probabilities. Since all class probability densities share a common variance-covariance matrix, this implies that a given variable $X_j$ will have the same variance in all the classes and the correlations between two given variables $X_{j1}$ and $X_{j2}$ are the same in all classes. Unlike LDA, QDA does not assume that the variance-covariance matrix of all the class densities are the same. As a result, QDA is a more flexible method than LDA. 
+
+Regularized discriminant analysis can be viewed as a compromise between LDA and QDA in that it assumes the variance-covariance matrix of each class probability density is a linear combination of the common pooled variance-covariance matrix used in LDA and of the class variance-covariance matrix used in QDA. 
+
+We use the Box's M-test, which is a multivariate statistical test to check the equality of multiple variance-covariance matrices, to assess whether the variance-covariance matrices of the group with the positive liver disease diagnosis and the group with the negative liver disease diagnosis are equal (Warner, 2013). The null hypothesis $H_0:$ covariance matrices of the predictors are equal across all groups based on the diagnosis label.
+
+```{r variance assessment}
+# Add gender indicator
+train$gender.ind <- ifelse(train$Gender=="Male",1,0)
+test$gender.ind <- ifelse(test$Gender=="Male",1,0)
+
+boxm <- heplots::boxM(train[,names(train)%in%c(
+  "Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG", "gender.ind")],train$Diagnosis)
+```
+
+Executing the Box's M-test gives a Chi-square statistic value of `r round(boxm$statistic,2)` with `r boxm$parameter` degrees of freedom, which corresponds to an extremely small p-value. Hence, based on Box's M-test for homogeneity of covariance matrices, there is strong evidence against the null hypothesis that the class probabilities share a common variance-covariance matrix. This is expected to influence the results.
+
+### Results
+
+```{r DA fits, eval=FALSE}
+# Training controls for discriminant analyses 
+da.control <- trainControl(method = "repeatedcv", number = 5, repeats=5, 
+                            savePredictions=TRUE, verbose=FALSE)
+
+# Fit LDA classifier on original training data
+ldaFit <- train(x=train[,names(train)%in%c("Age","TB","DB","ALP","ALT","AST",
+                                           "TP","ALB","RAG","gender.ind")],
+  y=train$Diagnosis,method="lda", 
+  trControl=da.control)
+ldaFit
+
+# Scale the predictors 
+trainScaled <- apply(train[,names(train)%in%c("Age","TB","DB","ALP","ALT","AST",
+                                              "TP","ALB","RAG","gender.ind")]],2,scale)
+
+# Fit LDA classifier on scaled training data for easier interpretability of the discriminant functions 
+ldaFitS <- train(x=trainScaled,y=train$Diagnosis, method="lda", 
+                 trControl=da.control)
+ldaFitS
+
+# Fit QDA classifier on original training data
+qdaFit <- train(x=train[,names(train)%in%c("Age","TB","DB","ALP","ALT","AST",
+                                           "TP","ALB","RAG","gender.ind")],
+  y=train$Diagnosis,method="qda", 
+  trControl=da.control)
+qdaFit
+
+# Fit regularized da classifier on original training data
+
+# Need klaR package
+library(klaR)
+
+# Note that the rda function can find the optimized parameter values for the regularization terms using a Nelder-Mead-Simplex algorithm 
+
+# Set up train control for rda
+rda.control <- trainControl(method = "repeatedcv", number = 5, repeats=5, 
+                            savePredictions=TRUE, verbose=FALSE)
+
+rdaFit <- train(x=train[,names(train)%in%c("Age","TB","DB","ALP","ALT","AST",
+                                           "TP","ALB","RAG","gender.ind")],
+  y=train$Diagnosis,method="rda", 
+  trControl=rda.control)
+rdaFit
+```
+
+```{r DA summary tables}
+# Now, create summary tables; we want out-of-sample accuracy and Kappa values
+oos.errors <- c(round(getTrainPerf(ldaFit)[1,1],3),
+                round(getTrainPerf(qdaFit)[1,1],3),
+                round(getTrainPerf(rdaFit)[1,1],3))
+kappa.vals <- c(round(getTrainPerf(ldaFit)[1,2],3),
+                round(getTrainPerf(qdaFit)[1,2],3),
+                round(getTrainPerf(rdaFit)[1,2],3))
+
+labels <- c("LDA", "QDA", "RDA")
+summary.table <- data.frame(labels, oos.errors, kappa.vals)
+colnames(summary.table) <- c("Model", "Mean Out of Sample Accuracy", "Mean Kappa Value")
+t1 <- tableGrob(summary.table, rows=NULL, theme=ttheme_default(base_size = 10))
+
+# Create accuracy and Kappa plot
+df <- data.frame(
+  Indices=rep(1:25, 3),
+  Accuracy=c(ldaFit$resample$Accuracy, qdaFit$resample$Accuracy,
+             rdaFit$resample$Accuracy),
+  Kappa = c(ldaFit$resample$Kappa, qdaFit$resample$Kappa, 
+            rdaFit$resample$Kappa),
+  Model=c(rep("LDA", 25),
+          rep("QDA", 25),
+          rep("RDA", 25)))
+
+# Plot accuracy and Kappa values over the 25 folds, and display them with the summary table
+p1 <- ggplot(data = df, aes(x=Indices, y=Accuracy)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Prediction Accuracy by Model") + theme(legend.position="top") +
+  theme(plot.title = element_text(size=10), legend.text=element_text(size=8)) + guides(colour=guide_legend(nrow=1))
+
+p2 <- ggplot(data = df, aes(x=Indices, y=Kappa)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Kappa Values by Model") + 
+  theme(legend.position = "none", plot.title = element_text(size=10))
+
+mylegend <- g_legend(p1)
+
+grid.arrange(arrangeGrob(p1 + theme(legend.position="none"),
+                         p2 + theme(legend.position="none"),
+                         nrow=1), mylegend, t1,  nrow=3, heights=c(5, 2, 4))
+
+lda.test.pred <- predict(ldaFit, newdata=test[,-c(2,18)])
+```
+
+Based on the mean out-of-sample accuracy, LDA and RDA perform much better than QDA in spite of Box's M-test suggesting that variance-covariance matrix for the liver disease diagnosis class and the no liver disease diagnosis class were different. Since the accuracy of the LDA classifier and the RDA classifier are similar, we compare the two classifiers based on the mean Kappa value. The LDA classifier has a higher Kappa value than the RDA classifier, so we ultimately choose the LDA classifier. 
+
+We can graph the histogram of the first canonical variable, which is the only discriminant function, to see how well defined the separation of the two classes are. 
+
+```{r LDA plot1, fig.width=8}
+lda.final <- lda(Diagnosis ~ Age+Gender+TB+DB+ALP+ALT+AST+TP+ALB+RAG, data=train)
+
+plot(lda.final, dimen=1, type="histogram", 
+     main="Values Along First Canonical Variate")
+```
+
+Based on the histograms, we can see that the values of the first canonical variable overlap for both class labels at values from approximately -1.5 to 2. This suggests that the LDA classifier would have difficulty distinguishing what the diagnosis of a given observation would be if the value of the first canonical variable lies in the range (-1.5,2). However, if the value of the first canonical variable is lower than -1.5, the LDA classifier will be able to correctly identify observations as receiving a positive liver disease diagnosis. 
+
+## Random Forest
+
+### About Random Forest
+
+Random Forest is a tree-based classifier. The idea is based on the fact that each individual tree would have a low bias, but they are highly variable therefore we use an ensemble approach to reduce the high variability. Moreover, it aims to improve the approach of Bagging (Boostrap Aggregation) of trees by reducing the correlation among weak leaners. It randomly selects a subsample of predictor variables to reduce the overlap between resamples. This allows all the different variables to contribute towards the creation of splits within the tree. This method can become very complex, specially as the number of trees used increases. However, trees are relatively interpretable for individuals with non-technical backgrounds and they are therefore a useful approach to consider. As with KNN and DA, a log transform on predictors was considered but made the performance worse, and thus was not used in our final model consideration.
+
+### Model Fitting
+
+Prior to fitting the random forest model, the effect of cumulatively adding variables to the model will be examined, using 5-fold cross validation to perform variable selection. The Random Forest model is not as sensitive to irrelevant features as some other models, however retaining only the important variables will help with reducing the complexity of the model. There are two parameters that will be tuned to select the best model. These two parameters are the number of variables randomly selected for each iteration (mtry), and the number of trees used to build the model (ntree). As we increase the number of trees, the out-of-bag error will reduce up to a point until it becomes stable because a higher number of trees enables the detection of all patterns in the data and reduces the bias. 
+
+### Model Assumptions
+
+The model does not make any specific assumptions because it does not use any parameters and it directly creates splits in the data. The only assumptions that automatically comes with a tree structure, and that might be a drawback in some cases, is that trees automatically consider interaction among the predictor variables. If the underlying model was additive, trees might not perform that well with classification. Additionally, every single classification tree in the random forest model will be a weaker learner than a tree in the bagging method because fewer variables are used to create one, however, the overall performance might be better due to the reduction in correlation between the trees. 
+
+```{r,eval=FALSE}
+
+##Preprocessing
+train2 <- train[,c("Age", "Gender", "TB", "DB", "ALT", "ALP", 
+                             "AST", "TP", "ALB", "RAG", "Diagnosis")]
+train2$Gender <- as.numeric(train2$Gender)
+train2$Diagnosis <- as.factor(train2$Diagnosis)
+
+##Find the best subset
+rfectrl <- rfeControl(functions = rfFuncs, method = "repeatedcv", repeats = 1, number =  5, verbose = FALSE)
+subsets <- c(1:10)
+rf_check <- rfe(train2[,names(train2) != "Diagnosis"], train2$Diagnosis, sizes = subsets, rfeControl = rfectrl)
+
+```
+
+```{r,fig.height=3.5, fig.width=8}
+
+##Results
+var_names <- rf_check$control$functions$selectVar(rf_check$variables,10)
+ggplot(rf_check)+ggtitle("Recursive Feature Elimination")+theme(plot.title = element_text(hjust = 0.5))+scale_x_continuous(name="Cumulatively Added Variables",breaks=c(1:10),labels=var_names)
+
+```
+
+### Results
+
+Recursive feature elimination was conducted on the random forest model that was fit to the data using 5-fold cross validation. The plot shows that the accuracy increases as we increase the number of variables used to fit the model until we add the last variable "TP" to the data. This shows that the random forest model is not as sensitive, as some other models, towards features that are not highly relevant. Indeed, the performance becomes better as the variables used are increased. As indicated in the plot, we will used 9 variables, by excluding "TP", to fit the random forest model. 
+
+```{r,eval=FALSE}
+
+##Create a function to tune ntree and mtry simultaneously using train from Caret
+RF_new <- list(type = "Classification", library = "randomForest", loop = NULL)
+RF_new$parameters <- data.frame(parameter = c("mtry", "ntree"), class = rep("numeric", 2), label = c("mtry", "ntree"))
+RF_new$grid <- function(x, y, len = NULL, search = "grid") {}
+RF_new$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+  randomForest(x, y, mtry = param$mtry, ntree=param$ntree, ...)
+}
+RF_new$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+   predict(modelFit, newdata)
+RF_new$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+   predict(modelFit, newdata, type = "prob")
+RF_new$sort <- function(x) x[order(x[,1]),]
+RF_new$levels <- function(x) x$classes
+
+
+##Fit model with selected variables
+##Preprocessing
+train4 <- train2[,names(train2) != "TP"]
+
+##Find optimum values for tuning parameters ntree and mtry
+rf_control <- trainControl(method="repeatedcv", number=5, repeats=5)
+rf_grid <- expand.grid(.mtry=c(1,2,3,5,7,9), .ntree=c(50,100,250,500,1000,1500))
+rf_fit <- train(Diagnosis~., data=train4, method=RF_new, tuneGrid=rf_grid, trControl=rf_control)
+
+```
+
+```{r,fig.width=12,fig.height=5}
+
+##plot the results
+p1<- plot(rf_fit)
+p2<- plot(rf_fit, 
+     plotType = "line",
+     metric = rf_fit$perfNames[2])
+
+grid.arrange(p1, p2, ncol=2, nrow=1)
+
+```
+
+From the left plot, for all different number of trees used to fit the model, the accuracy decreases gradually as more variables are used for each iteration. However, from the right plot, the values for Kappa significantly increase as more variables are added initially and starts to become stable and gradually decrease as more and more variables are added. This shows that if fewer variables are used, specifically just 1 variable, the accuracy is high but just because the classes are imbalanced. If only 1 variable is used, most observations are classified as diseased, which is the actual label for majority of observations in our data, hence the high accuracy. This fact can be deduced from the plot of Kappa which shows the accuracy normalized by the imbalance of the classes in data. 
+
+The value of Kappa is highest for the case where $mtry = 3$ and $ntree = 1000$, and this is also the highest point in the accuracy plot apart from the points that come from the variable $mtry = 1$. Therefore, this selection can result in our model performing the best, given the imbalance between classes. 
+
+```{r echo=FALSE, results = "hide",fig.height=2}
+
+# Now, create summary tables
+oos.errors <- c(round(rf_fit$results[rf_fit$results$mtry==3&rf_fit$results$ntree==1000,][3],3))
+kappa.vals <- c(round(rf_fit$results[rf_fit$results$mtry==3&rf_fit$results$ntree==1000,][4],3))
+
+labels <- c("Random Forest")
+summary.table <- data.frame(labels, oos.errors, kappa.vals)
+colnames(summary.table) <- c("Model", "Mean Out of Sample Accuracy", "Mean Kappa Value")
+t1 <- tableGrob(summary.table, rows=NULL, theme=ttheme_default(base_size = 10))
+grid.arrange(t1,nrow=1)
+
+```
+
+The table shows the results from fitting the model with $mtry = 3$ and $ntree = 1000$. These results are comparable with other models that we have seen so far. 
+
+```{r,eval=FALSE}
+
+rf_grid_selected <- expand.grid(.mtry=3, .ntree=1000)
+rf_fit_selected <- train(Diagnosis~., data=train4, method=RF_new, tuneGrid=rf_grid_selected, trControl=rf_control)
+rf_importance_selected <- varImp(rf_fit_selected, scale=FALSE)
+
+```
+
+```{r,fig.height=3, fig.width=8}
+
+ggplot(rf_importance_selected)+ggtitle("Variable Importance")+theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+The plot for variable importance for the selected model shows that all the variables contain almost similar importance to one another. "TB", "AST", "DB", "ALT", and "ALP" seem to be the most important, followed by "ALB", "RAG", "Age", and "Gender" which also seem to be relevant to fit the random forest model. 
+
+## Naive Bayes (NB)
+
+### About Naive Bayes
+
+Naive Bayes is a classification approach that relies on non-parametric density estimation for continuous predictors. In approaches such as discriminant analysis, the interest is on modelling $f_k(\mathbf{x})$ which refers to how the covariates are distributed within the $k^{th}$ response class. As the dimension of covariates increases, estimating this high dimensional density is difficult and usually enforces assumptions which may not be valid (such as a $p$ dimensional Gaussian we see in discriminant analysis). Naive Bayes improves on this by allowing $f_k(\mathbf{x}) = \prod_{j=1}^p f_{kj}(x_j)$; this means we can partition the multivariate density into the product of independent, univariate densities. Each of these densities can then be modeled using a kernel-based approach with given bandwidth parameter $h$,  or by enforcing assumptions of their form (such as assuming they are Gaussians). Both of these approaches are explored below.
+
+### Model Fitting
+
+Three major classes of Naive Bayes models were considered - one utilizing all of the original predictor variables, another using recursive feature elimination to reduce the number of covariates, and lastly using principal component analysis on the predictor set. The tuning parameters of interest in Naive Bayes depend on the kernel density estimation method being used. Each model was fit using a Gaussian density for the continuous predictors, and also fit using a more flexible non-parametric kernel density estimation approach. For the kernel density estimation iterations, the bandwidth parameter $h$ was also tuned to achieve the optimal fit. The prediction accuracy was assessed on the out-of-sample data points using 5-fold cross-validation repeated 5 times in total, resulting in a total of 25 predictive error estimations. Both the mean and individual values of these out-of-sample prediction errors were considered to select the final Naive Bayes model.
+
+### Model Assumptions
+
+Naive Bayes assumes that within a given class, the predictor variables are independent of one another. This allows the density estimation to be partitioned into multiple univariate marginal densities, rather than estimating a high dimensional kernel density function. Within the data visualization section of the report, we see some covariates are not independent, for example total and direct bilirubin are highly correlated. This suggests the assumptions of Naive Bayes are not fully satisfied in this context. However, this can be potentially circumvented by introducing variable selection, as one variable from a correlated pair could be dropped. Additionally, many recent research papers suggest that Naive Bayes can still provide strong prediction performance despite violation of independence, as seen in ["The Optimality of Naive Bayes"](http://www.aaai.org/Papers/FLAIRS/2004/Flairs04-097.pdf) (Zhang, 2004). 
+
+### Results
+
+```{r naive intialize}
+set.seed(999)
+# Initialize the 5-fold CV
+NB.control <- trainControl(method = "repeatedcv", number = 5, repeats=5, savePredictions = T)
+search_grid <- expand.grid(usekernel = c(TRUE, FALSE), laplace = c(0), adjust = seq(0.1, 8, by = 0.2))
+
+# Try with variable selection
+control <- rfeControl(functions=rfFuncs, method="cv", number=5)
+results <- rfe(x=predictors, y=factor(binary.response), sizes=c(1:8), rfeControl=control)
+opt.vars <- results$optVariables
+```
+
+```{r eval=FALSE}
+# Consider the following
+# Using kernel=FALSE means we assume Gaussian distribution for each continuous predictor
+# If Kernel=TRUE, we use kernel density estimation
+# Adjust is our bandwidth parameter (note if kernel=FALSE and we change this, no effect)
+
+# Naive Bayes with PCA
+nb.pca <- train(
+  x = predictors,
+  y = factor(binary.response),
+  method = "naive_bayes",
+  trControl = NB.control,
+  tuneGrid = search_grid,
+  preProc = c("pca")
+  )
+
+# Naive Bayes (default setting, no variable selection or PCA)
+nb <- train(
+  x = predictors,
+  y = factor(binary.response),
+  method = "naive_bayes",
+  trControl = NB.control,
+  tuneGrid = search_grid)
+
+# Naive Bayes with recursive feature elimination
+nb.var.select <- train(
+  x = predictors[results$optVariables],
+  y = factor(binary.response),
+  method = "naive_bayes",
+  trControl = NB.control,
+  tuneGrid = search_grid)
+```
+
+```{r naive results}
+# Results, plot the optimal tuning parameter values
+p1 <- plot(nb.pca, main = list("Naive Bayes with PCA", cex=0.75), 
+           ylim = c(0.4, 0.8), ylab = "", xlab=list("Bandwidth", cex=0.75),
+           par.settings = list(fontsize = list(text = 10, points = 10)))
+p2 <- plot(nb, main = list("Naive Bayes without PCA", cex=0.75), 
+           ylim = c(0.4, 0.8), ylab = "", xlab=list("Bandwidth", cex=0.75),
+           par.settings = list(fontsize = list(text = 10, points = 10)))
+p3 <- plot(nb.var.select, main = list("Naive Bayes with Variable Selection", cex=0.75), 
+           ylim = c(0.4, 0.8), ylab="", xlab=list("Bandwidth", cex=0.75),
+           par.settings = list(fontsize = list(text = 10, points = 10)))
+grid.arrange(p1, p2, p3, ncol=2, nrow=2, 
+             top = textGrob("Hyperparameter Tuning via Out-of-Sample Accuracy", 
+                            gp=gpar(fontsize=14, col = "brown4")))
+```
+
+In tuning each model, we see the methods relying on kernel density estimation in \textcolor{pink}{pink} and those relying on Gaussian densities in \textcolor{blue}{blue}. Gaussian-based models do not rely on the bandwidth hyperparameter and thus we see a straight line in each case. In general, we see that Naive Bayes with PCA is relatively robust to the specification of the tuning parameters while the other two models are more sensitive. As we increase the bandwidth parameter we see a clear decline in predictive accuracy, which is expected as this can lead to oversmoothed densities. All 3 models achieve comparable predictive accuracies under optimal tuning parameter selection.
+
+Naive Bayes with variable selection uses a kernel density estimation approach with $h=0.9$, while the Naive Bayes without PCA uses $h=0.1$ as the optimal tuning parameters. For Naive Bayes with PCA we increase the bandwidth to $h=5.3$ as the optimal value, though the difference in prediction accuracy seems relatively robust to specification of $h$ here.
+
+```{r naive results2, echo=FALSE}
+# Now, create summary tables
+oos.errors <- c(round(getTrainPerf(nb)[1,1],3), 
+                round(getTrainPerf(nb.pca)[1,1],3), 
+                round(getTrainPerf(nb.var.select)[1,1],3))
+kappa.vals <- c(round(getTrainPerf(nb)[1,2],3), 
+                round(getTrainPerf(nb.pca)[1,2],3), 
+                round(getTrainPerf(nb.var.select)[1,2],3))
+
+labels <- c("Naive Bayes with All Predictors", "Naive Bayes with PCA", "Naive Bayes with Variable Selection")
+summary.table <- data.frame(labels, oos.errors, kappa.vals)
+colnames(summary.table) <- c("Model", "Mean Out of Sample Accuracy", "Mean Kappa Value")
+t1 <- tableGrob(summary.table, rows=NULL, theme=ttheme_default(base_size = 10))
+
+# Create error plot; get Accuracy and Kappa per model
+df <- data.frame(
+  Indices=rep(1:25, 3),
+  Accuracy=c(nb$resample$Accuracy, nb.pca$resample$Accuracy, nb.var.select$resample$Accuracy),
+  Kappa = c(nb$resample$Kappa, nb.pca$resample$Kappa, nb.var.select$resample$Kappa),
+  Model=c(rep("Naive Bayes with All Predictors", 25),
+                rep("Naive Bayes with PCA", 25),
+                rep("Naive Bayes with Variable Selection", 25)))
+
+p1 <- ggplot(data = df, aes(x=Indices, y=Accuracy)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Prediction Accuracy by Model") + theme(legend.position="top") +
+  theme(plot.title = element_text(size=10), legend.text=element_text(size=8)) + guides(colour=guide_legend(nrow=2))
+
+p2 <- ggplot(data = df, aes(x=Indices, y=Kappa)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Kappa Values by Model") + 
+  theme(legend.position = "none", plot.title = element_text(size=10))
+
+mylegend<-g_legend(p1)
+
+grid.arrange(arrangeGrob(p1 + theme(legend.position="none"),
+                         p2 + theme(legend.position="none"),
+                         nrow=1), mylegend, t1,  nrow=3, heights=c(5, 2, 4))
+```
+
+Each of the line graphs gives insight into the volatility in both predictive accuracy and the values of Kappa. The predictive accuracy for the model with all predictors seems relatively volatile in terms of prediction accuracy, and using PCA seems to give the most stable predictions across folds. The $\kappa$ values relatively stable for all 3 models with some outlying points. The mean $\kappa$ values show larger differences than out-of-sample accuracy, which are similar across all models.
+
+Overall, for the implementation of Naive Bayes it seems using variable selection is the optimal choice here. This ensures our model is more parsimonious and interpretable relative to the other two choices. The predictive accuracy is comparable to both of the other models. This model contains the covariates `r opt.vars`, of which we plot the importance below. The optimal tuning parameter selection involving using a kernel density estimation approach with a bandwidth value $h= 0.9$.
+
+```{r naive var importance, fig.height=3, fig.width=8}
+ggplot(varImp(nb.var.select))
+```
+
+We can see that logTB and logAST are very important predictors, while logDB is moderately important. logALT and logALP have low relative importance values, while age, gender, ALB and RAG were dropped using recursive feature elimination.
+
+## Boosting with XGBoost
+
+### About XGBoost
+
+Extreme gradient boosting (XGBoost) is an extension of gradient boosting that implements regularization on model complexity to prevent potential overfitting. Gradient boosting is used in the scope of decision trees to minimize the loss function of the tree model. XGBoost has been a popular and successful choice in data competitions, which has resulted in it gaining a reputation as a strong learning method. XGBoost is a tree-based method similar to Random Forest (and thus is subject to similar assumptions), however it relies on boosting instead of bagging to develop the model. Boosting differs from bagging because trees are grown *sequentially*, with heavier emphasis on observations that were previously misclassified in previous iterations. This can be a particularly effective at improving the overall performance.
+
+### Model Fitting
+
+We used 5-fold cross-validation on the training set to tune the hyperparameters: shrinkage/learning rate, penalty coefficient, the maximum depth of the trees, minimum number of observations per node, number of trees (iterations), sampling proportion of the training data, and the proportion of predictors to use to train the trees at every iteration. The original predictors were used instead of log-transformed predictors as these gave better prediction accuracy for each of the models considered. Variable selection using RFE was also considered.
+
+### Results
+
+```{r xgboost fit, eval=FALSE}
+# Set seed for reproducibility
+set.seed(999)
+
+# Use caret package to train the xgboost classifier!
+xgb.control <- trainControl(method="cv", number=5, savePredictions=TRUE, 
+                            verboseIter=FALSE, returnData=FALSE)
+
+# Add gender indicator
+train$gender.ind <- ifelse(train$Gender=="Male",1,0)
+test$gender.ind <- ifelse(test$Gender=="Male",1,0)
+
+# Transform training and test sets into xgb.DMatrix objects
+xgbTrainX <- xgb.DMatrix(data=as.matrix(train[,names(train)%in%c(
+  "Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG","gender.ind")]))
+xgbTrainY <- train$Diagnosis
+xgbTestX <- xgb.DMatrix(data=as.matrix(test[,names(test)%in%c(
+  "Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG","gender.ind")]))
+xgbTestY <- test$Diagnosis
+
+paramGrid <- expand.grid(eta=c(0.01,0.1,0.3,0.5),
+                         gamma=c(0,0.1,0.2,0.3,0.4),
+                         max_depth=2*(1:3)-1,
+                         min_child_weight=c(5,15),
+                         subsample=c(0.5,0.75,1),
+                         colsample_bytree=c(0.5,0.75,1),
+                         nrounds=c(100,300,500))
+
+xgbTrain <- caret::train(x=xgbTrainX,y=xgbTrainY,method="xgbTree",
+                         trControl=xgb.control, tuneGrid=paramGrid, nthread=1)
+```
+
+Based on the output of the training, the optimal parameters which were selected based on the highest accuracy for the classifier on all predictors are: a shrinkage of `r as.numeric(xgbTrain$bestTune[3])`, a penalty coefficient of `r as.numeric(xgbTrain$bestTune[4])` maximum depth of `r as.numeric(xgbTrain$bestTune[2])` terminal nodes, a minimum of `r as.numeric(xgbTrain$bestTune[6])` observations per node, `r as.numeric(xgbTrain$bestTune[1])` trees in the ensemble, randomly sampling `r as.numeric(xgbTrain$bestTune[7])*100`% of the training data for each tree, and randomly selecting `r as.numeric(xgbTrain$bestTune[5])*100`% of the training data for each tree. The training accuracy and the Kappa value of the XGBoost classifier with these set of classifiers was `r round(xgbTrain$results[which.max(xgbTrain$results[,8]),8],3)` and `r round(xgbTrain$results[which.max(xgbTrain$results[,8]),9],3)` respectively. 
+
+We may also consider using RFE to select features before fitting the XGBoost classifier on the training data.
+
+```{r xgboost rfe, eval=FALSE}
+set.seed(999)
+
+# Add gender indicator
+train$gender.ind <- ifelse(train$Gender=="Male",1,0)
+test$gender.ind <- ifelse(test$Gender=="Male",1,0)
+
+# Try with variable selection
+xgb.rfe.control <- rfeControl(functions=caretFuncs, method="cv", number=5,
+                              verbose=FALSE)
+xgb.rfe <- rfe(x=train[,names(train)%in%c(
+  "Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG","gender.ind")], 
+  y=train$Diagnosis, size=c(1:10),rfeControl=xgb.rfe.control)
+opt.vars <- xgb.rfe$optVariables
+```
+
+Applying RFE gives that the optimal variables are ALP, ALT, AST, Age, ALB, TB and TP. 
+
+```{r reduced xgboost, eval=FALSE}
+set.seed(999)
+
+xgb.control <- trainControl(method="cv", number=5, savePredictions=TRUE, 
+                            verboseIter=FALSE, returnData=FALSE)
+
+# Add gender indicator
+train$gender.ind <- ifelse(train$Gender=="Male",1,0)
+test$gender.ind <- ifelse(test$Gender=="Male",1,0)
+
+# Transform training and test sets into xgb.DMatrix objects
+xgbTrainXRed <- xgb.DMatrix(data=as.matrix(train[,opt.vars]))
+xgbTrainY <- train$Diagnosis
+
+xgbParamGrid <- expand.grid(eta=c(0.01,0.1,0.3,0.5),
+                         gamma=c(0,0.1,0.2,0.3,0.4),
+                         max_depth=2*(1:3)-1,
+                         min_child_weight=c(5,15),
+                         subsample=c(0.5,0.75,1),
+                         colsample_bytree=c(0.5,0.75,1),
+                         nrounds=c(100,300,500))
+
+xgbRed <- caret::train(x=xgbTrainXRed,y=xgbTrainY,method="xgbTree",
+                       trControl=xgb.control,tuneGrid=xgbParamGrid, nthread=1)
+```
+
+Based on the output of the training, the optimal parameters which were selected based on the highest accuracy for the XGBoost classifier with variable selection are: 
+a shrinkage of `r as.numeric(xgbRed$bestTune[3])`, a penalty coefficient of `r as.numeric(xgbRed$bestTune[4])` maximum depth of `r as.numeric(xgbRed$bestTune[2])` terminal nodes, a minimum of `r as.numeric(xgbRed$bestTune[6])` observations per node, `r as.numeric(xgbRed$bestTune[1])` trees in the ensemble, randomly sampling `r as.numeric(xgbRed$bestTune[7])*100`% of the training data for each tree, and randomly selecting `r as.numeric(xgbRed$bestTune[5])*100`% of the training data for each tree. The training accuracy and the Kappa value of the XGBoost classifier with these set of classifiers was `r round(xgbRed$results[which.max(xgbRed$results[,8]),8],3)` and `r round(xgbRed$results[which.max(xgbRed$results[,8]),9],3)` respectively. 
+
+
+```{r xgb results}
+# Now, create summary tables; we want out-of-sample accuracy and Kappa values
+oos.errors <- c(round(getTrainPerf(xgbTrain)[1,1],3),
+                round(getTrainPerf(xgbRed)[1,1],3))
+kappa.vals <- c(round(getTrainPerf(xgbTrain)[1,2],3),
+                round(getTrainPerf(xgbRed)[1,2],3))
+
+labels <- c("XGBoost with all Predictors", "XGBoost with Variable Selection")
+summary.table <- data.frame(labels, oos.errors, kappa.vals)
+colnames(summary.table) <- c("Model", "Mean Out of Sample Accuracy", "Mean Kappa Value")
+t1 <- tableGrob(summary.table, rows=NULL, theme=ttheme_default(base_size = 10))
+
+# Create accuracy and Kappa plot
+df <- data.frame(
+  Indices=rep(1:5, 2),
+  Accuracy=c(xgbTrain$resample$Accuracy, xgbRed$resample$Accuracy),
+  Kappa = c(xgbTrain$resample$Kappa, xgbRed$resample$Kappa),
+  Model=c(rep("XGBoost with all Predictors", 5),
+          rep("XGBoost with Variable Selection", 5)))
+
+# Plot accuracy and Kappa values over the 25 folds, and display them with the summary table
+p1 <- ggplot(data = df, aes(x=Indices, y=Accuracy)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Prediction Accuracy by Model") + theme(legend.position="top") +
+  theme(plot.title = element_text(size=10), legend.text=element_text(size=8)) + guides(colour=guide_legend(nrow=1))
+
+p2 <- ggplot(data = df, aes(x=Indices, y=Kappa)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Kappa Values by Model") + 
+  theme(legend.position = "none", plot.title = element_text(size=10))
+
+mylegend <- g_legend(p1)
+
+grid.arrange(arrangeGrob(p1 + theme(legend.position="none"),
+                         p2 + theme(legend.position="none"),
+                         nrow=1), mylegend, t1,  nrow=3, heights=c(5, 2, 4))
+```
+
+Since both the mean out-of-sample accuracy and the mean Kappa value for the XGBoost classifier containing all the predictors perform better than the XGBoost classifier with variables selected based on RFE, we choose the former classifier as the better performing one.
+
+```{r XGBoost importance, eval=FALSE}
+xgb.control <- trainControl(method="none", savePredictions=TRUE, 
+                            verboseIter=FALSE, returnData=FALSE)
+
+# Add gender indicator
+train$gender.ind <- ifelse(train$Gender=="Male",1,0)
+test$gender.ind <- ifelse(test$Gender=="Male",1,0)
+
+# Transform training and test sets into xgb.DMatrix objects
+xgbTrainX <- xgb.DMatrix(data=as.matrix(train[,names(train)%in%c(
+  "Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG","gender.ind")]))
+xgbTrainY <- train$Diagnosis
+
+xgbFinalGrid <- expand.grid(eta=0.5,gamma=0.1,max_depth=5,nrounds=100,
+                            min_child_weight=15,
+                            subsample=0.75,colsample_bytree=0.5)
+
+xgbFinal <- caret::train(x=xgbTrainX,y=xgbTrainY,method="xgbTree",
+                         trControl=xgb.control,tuneGrid=xgbFinalGrid, nthread=1)
+
+xgbImp <- varImp(xgbFinal, scale=FALSE)
+
+```
+
+```{r,fig.height=4}
+
+colnames <- c("Age","TB","DB","ALP","ALT","AST","TP","ALB","RAG","gender.ind")
+order_colnames <- colnames[c(5,3,0,1,7,4,2,6,8)+1]
+plot(xgbImp,ylim=rev(order_colnames),main="Variable Importance of XGBoost Classifier")
+
+```
+
+We note that AST is the most important predictor; after AST, the decrease in importance is almost similar proportionally, with RAG being the least important predictor.
+
+# Statistical Conclusions
+
+```{r final models, eval=FALSE}
+# Re-fit each model on the entire training set
+final.logistic <- glm(
+  factor(Diagnosis)~Age+factor(Gender)+logTB+logDB+logALP+logALT+logAST+logTP+ALB+RAG+
+                   factor(Gender)*logTB + factor(Gender)*logDB + factor(Gender)*logAST + factor(Gender)*ALB +
+                   Age*logTB + Age*logDB + Age*logTP + Age*ALB + Age*RAG, data=train, family=binomial())
+
+final.nb <- naive_bayes(
+  x = predictors[results$optVariables],
+  y = factor(binary.response),
+  usekernel=TRUE, adjust=0.9)
+
+# KNN
+train3x <- train2[,c("AST", "TB", "DB", "ALP")]
+preproc_xvals <- preProcess(train3x)
+preproc_train3x <- predict(preproc_xvals, train3x)
+preproc_train3x <- as.data.frame(preproc_train3x)
+
+test2x <- test[,c("AST", "TB", "DB", "ALP")] 
+preproc_test_xvals <- preProcess(test2x)
+preproc_test2x <- predict(preproc_test_xvals, test2x)
+preproc_test2x <- as.data.frame(preproc_test2x)
+
+knn_selected <- knn(preproc_train3x,preproc_test2x,train2$Diagnosis,k=25)
+cm_table_knn <- table(knn_selected,test$Diagnosis)
+accuracy_func <- function(x){sum(diag(x)/(sum(rowSums(x))))}
+knn_selected_accuracy <- accuracy_func(cm_table_knn)
+
+# Discriminant Analysis
+lda.final <- lda(Diagnosis ~ Age+Gender+TB+DB+ALP+ALT+AST+TP+ALB+RAG, data=train)
+predict(ldaFit, newdata=test)
+
+# Random Forest
+test2 <- test[,c("Age", "Gender", "TB", "DB", "ALT", "ALP", 
+                             "AST", "ALB", "RAG", "Diagnosis")]
+test2$Gender <- as.numeric(test2$Gender)
+test2$Diagnosis <- as.factor(test2$Diagnosis)
+
+rf_selected <- randomForest(data=train4, Diagnosis~., 
+                       importance=TRUE, ntree=1000, mtry=3,keep.forest=TRUE)
+
+rf_selected_test <- predict(rf_selected, newdata=test2, type="response")
+rf_selected_test_misclass <- mean(ifelse(rf_selected_test == test2$Diagnosis, yes=0, no=1))
+rf_selected_accuracy <- 1-rf_selected_test_misclass
+
+# XGBoost
+xgb.control <- trainControl(method="none", savePredictions=TRUE, 
+                            verboseIter=FALSE, returnData=FALSE)
+
+xgbFinalGrid <- expand.grid(eta=0.5,gamma=0.1,max_depth=5,nrounds=100,
+                            min_child_weight=15,
+                            subsample=0.75,colsample_bytree=0.5)
+
+xgbFinal <- caret::train(x=xgbTrainX,y=xgbTrainY,method="xgbTree",
+                         trControl=xgb.control,
+                         tuneGrid=xgbFinalGrid, nthread=1)
+
+xgbPred <- predict(xgbFinal, newdata=xgbTestX)
+xgbTest <- mean(ifelse(xgbPred == test$Diagnosis, yes=1, no=0))
+```
+
+To determine the best model out of the 5 models that were discussed, we will look at the mean out-of-sample accuracy from cross validation on the training set, mean Kappa values from cross validation on the training set, and test accuracy for each model. 
+
+We consider mean out-of-sample accuracy values for the purpose of checking the consistency of the model by comparing the value with the test accuracy value. If the two values are close enough it indicates that the model was highly consistent. 
+
+We use mean Kappa values because they are useful at normalizing the accuracy values with respect to the imbalance in our classes. A low Kappa value indicates that a high proportion of values for one or both of the classes were classified incorrectly. Since proportions are considered, instead of the actual numbers, class imbalance does not effect this metric. We will not use Kappa values directly because they are from the cross-validation on training set, but they give us an idea of what the confusion matrix would look like. 
+
+Lastly, we consider test accuracy values because these values have not been used at all for fitting the models, and therefore, they give us an unbiased view of the accuracy for the model. 
+
+
+```{r test errors}
+# Get the final test error estimates; NOTE these are labelled 'error' but refer to accuracy
+
+# Logistic 
+logistic.predictions <- ifelse(predict(final.logistic, newdata=test, 
+                                       type="response") > 0.5, y=1, n=0)
+logistic.test.error <- sum(logistic.predictions == test$binary.response)/nrow(test)
+
+# Naive Bayes
+nb.test.error <- sum(predict(final.nb, newdata=test) == test$binary.response)/nrow(test)
+
+# DA
+#load("lda.test.pred.rda")
+lda.temp <- ifelse(test$Diagnosis == "Liver Disease", y="Liver.Disease", n="No.Disease")
+lda.test.error <- sum(lda.test.pred == lda.temp)/nrow(test)
+
+# XGBoost 
+xgb.test.error <- mean(ifelse(xgbPred == test$Diagnosis, yes=1, no=0))
+
+# Random Forest
+rf.test.error <- mean(ifelse(rf_selected_test==test$Diagnosis,1,0))
+
+# KNN
+knn.test.error <- mean(ifelse(knn_selected==test$Diagnosis,1,0))
+
+# Have test accuracies in one vector
+testErrors <- c(nb.test.error,knn.test.error,lda.test.error,
+                rf.test.error,xgb.test.error)
+
+labels <- c("Naive Bayes", "KNN", "LDA", 
+            "Random Forest", "XGBoost")
+
+# Get the validation accuracy and Kappas from before
+valid.acc <- c(0.664, 0.713, 0.683, 0.712, 0.727)
+kappas <- c(0.326, 0.297, 0.084, 0.269, 0.307)
+
+test.acc.table <- data.frame(labels, valid.acc, kappas, testErrors)
+colnames(test.acc.table) <- c("Model", "Out-of-Sample Accuracy", "Mean Kappa Value", "Test Accuracy")
+kable(test.acc.table, digits=3, caption = "Summary of final results") %>% kable_styling(latex_options="hold_position")
+```
+
+In terms of the mean out of sample accuracy and test accuracy, Naive Bayes has the lowest numbers compared to the other 4 models. It does have a high value for the mean of Kappa values. Since we have a combination of comparatively lower accuracy, with a higher Kappa, it indicates that the model performs well with classifiying patients with no disease correctly, but it is not as accurate with classifying patients with liver disease. This might cause serious problems, hence we try to look at other models that might perform better than Naive Bayes. 
+
+We look at LDA next since it has a higher out-of-sample accuracy and test accuracy than Naive Bayes. Even though the values for accuracy are comparatively high, they seem to be a little inconsistent. On top of that, the Kappa value for LDA is very low compared to the other models. A combination of low Kappa value with high accuracy indicates that the model is assigning most of the observations to the class that we have in majority. This would result in high accuracy because most of the majority class will be assigned correctly, but it comes at the cost of a very high proportion of values from the minority class being assigned to the majority class as well. In our case, this will lead to a prediction of Liver Disease for a very high number of individuals that actually do not have the disease, which is again a serious problem. 
+
+Therefore, after eliminating Naive Bayes and LDA due to comparatively low accuracy and low kappa value respectively, we look at the other three models that seem to have comparatively higher and very similar accuracy and kappa. KNN, Random Forest, and XGBoost seem to have very similar out-of-sample accuracy levels. In terms of test accuracy, the results for Random Forest seem to be the most consistent to out-of-sample accuracy. KNN has a lower test accuracy, and XGBoost has a higher test accuracy compared to the out-of-sample accuracy. This could just be due to the specfic test set that we have in this case, and performance might vary a bit with a different test set, however all three models perform at a similar level overall. 
+
+```{r,fig.height=5}
+
+##Confusion Matrices
+
+##KNN
+knn.confusion <- confusionMatrix(as.factor(knn_selected),as.factor(test$Diagnosis))
+
+##Random Forest
+rf.confusion <- confusionMatrix(as.factor(rf_selected_test),as.factor(test$Diagnosis))
+
+##Gradient Boosting
+xgb.confusion <- confusionMatrix(as.factor(xgbPred),as.factor(test$Diagnosis))
+
+p1<-knn.confusion$table
+p2<-rf.confusion$table
+p3<-xgb.confusion$table
+
+par(mfrow=c(2,2))
+fourfoldplot(p1,main="KNN")
+fourfoldplot(p2,main="Random Forest")
+fourfoldplot(p3, main="XGBoost")
+
+```
+
+The plot shows the confusion matrices for the three models. XGBoost performs the best at classifying individuals with Liver Disease, followed by Random Forest, and then KNN. For individuals with no disease, XGBoost again does the best job, followed by KNN, and then Random Forest. Even though the numbers differ a little, they are very close to each other. 
+
+Another thing to consider here would be the interpretability of the model we choose. Our goal here is to find the optimal trade-off between interpretability, parsimony and interpretability for a clinician. Out of the three models, KNN is the easiest to interpret and to explain to a clinician. The model simply uses the blood test results of an individual to identify the diagnosis label based on the diagnosis label of other individuals with similar blood test results. 
+
+Moreover, the model selected for KNN was after variable selection, so it uses only 4 variables. On the other hand, the model used for Random Forest makes use of 9 variables and the model for XGBoost uses all 10 variables. Therefore, KNN also allows for a parsimonious model with all variables containing high and equal levels of importance. 
+
+Since, KNN allows for higher interpretability and parsimony for a slight decrease in accuracy, we will select the KNN model as our final model with variables "AST", "TB", "DB", and "ALP" and tuning parameter $k=25$. 
+ 
+
+# Conclusions and Future Work
+
+Our chosen model, KNN, uses the variables "AST", "TB", "DB", and "ALP". In the data exploration section, we saw all these variables to be very important because they had an evident trend in the training data. AST (Aspartate Aminotransferase) is an enzyme found in the blood and liver cells and is generally higher among the individuals with liver disease. TB (Total Bilirubin) and DB (Direct Bilirubin) are both measurements related to the Bilirubin levels in blood, which is a chemical that occurs as a result of red blood cells breaking down. Total Bilirubin includes Direct Bilirubin and Indirect Bilirubin, therefore the correlation among these two variables is very high. Even with the high correlation, both these variables were considered important variables for the model. This means that Bilirubin levels in blood are very strong predictors for Liver Disease because it is essentially considered with double the amount of weight as any other variables in our model. ALP (Alkaline Phosphotase) is an enzyme found within bone cells and the liver and is also generally higher among the individuals with Liver Disease. 
+
+Most of these function tests are useful indicators of liver disease, however, some of them might also indicate diseases other than liver disease. For example, increased AST levels might indicate liver damage but it could also indicate muscle damage. Similarly, increased bilirubin levels might indicate liver damage or certain types of anemia. Increased ALP levels might indicate liver damage or certain bone diseases (Mayo Clinic, 2019). Therefore, we need to be careful when determining the diagnosis of an individual using the model, because the blood test levels might be an indicator of diseases other than liver damage too. It might help to have the data on any other diseases that the patients had other than liver damage. It would be useful to explain the variations in blood test levels even more, and make better classifications, as to if an individual had liver disease, some other disease, multiple diseases, or no disease. Another variation for this idea is to have the data on the severity of the liver damage. Some of these measurements in the blood test are an indicator for liver disease, but also liver damage. Knowing the measurements associated with the specific case, and the severity of the damage might help with classifcation too, by having different classes for different levels of severity of damage or disease. This way the cases predicted as high severity might be worth looking into more. 
+
+Some other additions worth considering are to include other measurements from blood test levels that might also be an indicator of liver disease or damage. These measurements can include Gamma-glutamyltransferase (GGT), L-lactate dehydrogenase (LD), and Prothrombin time (PT) (Mayo Clinic, 2019). Additionally, covariates ascertained from patient's medical records, such as height, weight, family history of disease, smoking status, etc could be included too. These covariates could potentially act as confounders and may be useful in improving prediction accuracy. Currently, the data size is also not that large, specially the observations for no disease, which  also causes an imbalance in the training data. A larger dataset, with balanced classes, might be helpful in improving the performance of the trained model. 
+
+Moreover, the purpose of this report was to find a method that creates an optimal trade-off between accuracy, parsimony, and interpretability therefore complex models were not considered in this report. Models such as support vector machines or neural networks are becoming increasingly popular in recent work due to their strong predictive performance. These could be compared relative to interpretable models to see how drastic the increase in performance is. 
+
+# Contributions
+
+Each group member contributed equal amounts of time and effort to the final report; two models were fit per team member, and then a body section of the report was completed by each group member.
+
++ **Discriminant Analysis, XGBoost, Data Pre-processing**: Angela
++ **KNN, Random Forest, Conclusion**: Asad
++ **Introduction, Naive Bayes, Logistic Regression, Data Visualization + Interaction**: Marcus
+
+\newpage
+
+# Appendices
+
+## Appendix A: Variable Interaction
+
+## Interactions, Correlations, and Relations Among Predictors
+
+In addition to looking at the univariate distributions of predictor variables, we may also be considering in two dimensional (or higher) conditional distributions. This can help identify variables which are correlated with one another, potential interactions between variables, or trends otherwise not apparent from a marginal distribution alone.
+
+Within this report, the primary interaction of interest lies between the predictor variables and sex, as well as age. These features are commonly assessed in biomedical studies, since biological differences resulting from sex or age can lead to differences in blood protein levels. To avoid *data dredging* (fitting without first considering some underlying hypothesis or relationship in the data, like inserting all two-way interactions into a model without considering their interpretation or sensibility), interactions are considered before model fitting and supported through external research.
+
+To get an idea of how interaction with sex and age may occur, the training data is partitioned into 4 groups, based on disease status and either sex (male/female) or age (splitting the distribution of ages into 3 distinct groups). The densities between the controls and cases are then compared; if we see a similar trend in how the disease status changes the density between each sex or age group, we do not have strong evidence of interaction between that covariate and sex or age with respect to disease status. However, if we notice that the change in distribution of a covariate between disease groups is dependent on sex or age, this suggests an interaction.
+
+### Interaction with Sex
+
+```{r}
+p1 <- ggplot(train,aes(x=logTB, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("logTB") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p2 <- ggplot(train,aes(x=logDB, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("logDB") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p3 <- ggplot(train,aes(x=logALP, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("logALP") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p4 <- ggplot(train,aes(x=logALT, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("logALT") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p5 <- ggplot(train,aes(x=logAST, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("logAST") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p6 <- ggplot(train,aes(x=logTP, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("logTP") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p7 <- ggplot(train,aes(x=ALB, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("ALB") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p8 <- ggplot(train,aes(x=RAG, fill=Gender)) + geom_density(alpha=0.25) + ggtitle("RAG") + 
+  facet_grid(. ~ Diagnosis)
+p9 <- ggplot(train,aes(x=Age, fill=Gender)) + geom_histogram(alpha=0.65, color="black") + ggtitle("Age") +
+  facet_grid(. ~ Diagnosis)
+
+ggarrange(p1, p2, p3, p4, p5, p6, p7, p8, p9, ncol=3, nrow=3, 
+          common.legend = TRUE, legend="bottom")
+```
+
+Looking at each of the plots:
+
++ As seen before, logTB and logDB tend to increase in cases relative to controls. However, the magnitude of increase appears to be greater for males than it does for females, as evident by the greater degree of elongation. This suggests that there may be an interaction between logTB and sex with respect to predicting disease.
++ The change in logALP appears to be similar for both males and females, suggesting no major interaction. Similarly, we see that logALT, logTP, RAG and age appear to have consist trends between genders.
++ For logAST, there is a slight trend in that the increase for men among controls to cases seems to be larger than that of females. This is evident because among the controls, the densities almost perfectly overlap (though males are slightly shifted to the right), but in the cases there is a more considerable horizontal shift in males relative to females.
++ ALB also appears to have sex-based interaction; looking at the individuals with no disease, males tend to have higher ALB levels than females. However for diseased patients, females tend to have higher ALB levels than males. This may suggest the magnitude of increase is larger for females who develop liver disease.
+
+In conclusion, it appears that interaction between sex and logTB, logDB, logAST and ALB should be considered in the initial model fitting.
+
+### Relationship with Age
+
+To examine age, we use a simplified approach to partition age into 3 equally sized groups, though the sample size may differ between groups. The age groups of interest are [4,32.7] (red), (32.7,61.3] (green), and (61.3,90] (blue). Similar to sex, we examine whether or not the change between controls and cases of a given covariate changes in a similar manner for each age group.
+
+```{r}
+# Partition age
+AgeGrps <- cut_interval(train$Age, n = 3)
+
+# Look at groups
+p1 <- ggplot(train,aes(x=logTB, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("logTB") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p2 <- ggplot(train,aes(x=logDB, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("logDB") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p3 <- ggplot(train,aes(x=logALP, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("logALP") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p4 <- ggplot(train,aes(x=logALT, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("logALT") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p5 <- ggplot(train,aes(x=logAST, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("logAST") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p6 <- ggplot(train,aes(x=logTP, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("logTP") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p7 <- ggplot(train,aes(x=ALB, fill=AgeGrps)) + geom_density(alpha=0.25) + ggtitle("ALB") +
+  theme(legend.position="none") + facet_grid(. ~ Diagnosis)
+p8 <- ggplot(train,aes(x=RAG, fill=AgeGrps)) + geom_density(alpha=0.25, color="black") + ggtitle("RAG") + 
+  facet_grid(. ~ Diagnosis)
+
+ggarrange(p1, p2, p3, p4, p5, p6, p7, p8, ncol=3, nrow=3, common.legend = TRUE, legend="bottom")
+```
+
++ Looking at logTB, we notice that the change between groups seems dependent on age. For the group in green (intermediate ages), we see that the bimodality in the controls becomes masked in the diseased group, whereas in the red group (lowest age group) still maintains bimodality. The difference in change in distribution between groups suggests age and logTB interact.
++ Similarly, logDB appears to interact with age as the change in densities varies greatly between the two groups. The magnitude in which logDB increases from cases to controls appears to be much larger for the lowest and highest age groups compared to the intermediate group.
++ The change in logALP, logALT, logAST,appears to be relatively consistent among ages.
++ For logTP, we see that in the controls there seems to be a clear increasing gradient of logTP levels as age decreases. However, when we look at the controls, we see that this order changes, and there is considerably more overlap among the densities. In particular, we see that for the youngest group, the decrease in logTP is the most dramatic. This suggests an age-based interaction.
++ Similar to logTP, for ALB levels we see differences in the change among age groups. For older individuals, liver disease seems to lower ALB levels, but for the intermediate and oldest age group, the disease appears to slightly increase ALB levels. The magnitude of change also seems different for the 3 groups, meaning an interaction should be considered.
++ Lastly, for RAG we see that younger and intermediate ages seem to have relatively consistent RAG levels between groups. However for the oldest age group, the RAG levels tend to decrease considerably for diseased patients relative to controls.
+
+In conclusion, we should consider interaction between age and logTB, logDB, logTP, ALB and RAG within the initial model fitting.
+
+### Correlation between Covariates
+
+Based on what variables were collected, we expect to see some degree of correlation among some of the predictor variables in the dataset. For example, total bilirubin levels are expected to be correlated with direct bilirubin levels since total bilirubin is given by direct + indirect bilirubin levels. Correlated predictors can be an issue as this can lead to collinearity, and ultimately very large variances in our estimates. Exploring the pairs plot below can give insight into what variables are correlated. Similar to before, we have cases in \textcolor{red}{red} and controls in \textcolor{blue}{blue}.
+
+```{r}
+# Looking at each pair
+gpairs_lower <- function(g){
+  g$plots <- g$plots[-(1:g$nrow)]
+  g$yAxisLabels <- g$yAxisLabels[-1]
+  g$nrow <- g$nrow -1
+
+  g$plots <- g$plots[-(seq(g$ncol, length(g$plots), by = g$ncol))]
+  g$xAxisLabels <- g$xAxisLabels[-g$ncol]
+  g$ncol <- g$ncol - 1
+
+  g
+}
+
+g <- ggpairs(train[,c("logTB", "logDB", "logALP",
+                 "logALT", "logAST", "logTP",
+                 "ALB", "RAG")], aes(colour = train$Diagnosis, alpha = 0.3),
+             lower  = list(continuous = "points"),
+             upper  = list(continuous = "blank"),
+             diag  = list(continuous = "blankDiag"))
+gpairs_lower(g) 
+```
+
++ Clearly total bilirubin and direct bilirubin are higher correlated, as there is almost a perfect linear relationship between them.
++ ALT and AST levels, ALB and logTP also appear to be positively correlated with a strong degree of correlation.
++ RAG and ALB levels have a weak positive correlation.
+
+Based on these results, we have some strategies for dealing with these correlations. Each of these approaches will be applied to the models (where applicable) and then compared to a standard model in which none of the approaches are used:
+
+1) Dropping one of the covariates in a pair of highly correlated measurements, especially total and direct bilirubin. These variables measure essentially the same thing, though arguably total bilirubin is more informative since it also includes indirect bilirubin levels as well. By only including one of these predictors, we reduce the correlation among them while still retaining the underlying information. This can be done in the variable selection step when fitting each of the models.
+
+2) Implementing regularization to reduce the standard error of the estimated coefficients (dependent on the model of interest being considered). The advantage of this approach is the reduction of variance, but the cost is the introduction of bias in the estimation of parameters. In order to assess the improvement that regularization will provide, a regularized model will be compared against a non-regularized model. The advantage of regularization over other approaches is that we can still interpret the resultant coefficients.
+
+3) Introducing Principal Component Analysis. This approach is straightforward to implement, and will ensure our resultant predictors (principal components) are uncorrelated. However, in the context of this report, using PCA may not be suitable. By implementing PCA, the result is a linear combination of the original predictor variables, which can make interpretation difficult to impossible. This is especially an issue since the intended purpose of the fitted models is to not only predict liver disease, but also communicate these results to health professionals. By losing interpretation, a key goal of this report is violated. Therefore the results of PCA will be examined, but it will only be used if the final model is a significant improvement over the other previous approaches. This would suggest that maintaining both high predictive accuracy and interpretation in the final model may not be achievable. 
+
+```{r}
+cor.mat <- cor(train[,c("logTB", "logDB", "logALP", "logALT", "logAST", "logTP", "ALB", "RAG")], use="complete.obs")
+cor.mat[lower.tri(cor.mat,diag=TRUE)] <- 0
+
+kable(cor(train[,c("logTB", "logDB", "logALP", "logALT", "logAST", "logTP", "ALB", "RAG")], use="complete.obs"), caption="Correlation Matrix", digits=2) %>% kable_styling(latex_options="hold_position")
+```
+
+As expected, we see identical correlation patterns to what was observed before. The logDB and logTB values are almost perfectly correlated ($\rho = 0.96$), while logTP and ALB and ALB and RAG also have relative large correlations ($\rho=0.78$ and $\rho=0.66$, respectively).
+
+\newpage
+
+## Appendix B: Logistic Regression
+
+## Logistic Regression
+
+**Note**: The final test set accuracy using the selected logistic model was very poor, and was therefore not considered in the final comparison of all models.
+
+### About Logistic Regression
+
+Logistic regression is a fully parametric approach which models the conditional distribution of $Y|X \sim Bernoulli(p)$. Though relatively simple in comparison to many modern machine learning techniques, logistic regression remains popular in biomedical and clinical research as a result of its easy implementation and interpretation. By using logistic regression, features such as coefficient interpretation, variable importance, hypothesis testing and visualization are relatively straightforward when compared to more complex models seen later in the report. Logistic models are also highly customizable, and can be incorporated with tools such as principal component analysis, regularization, feature selection, and non-parametric smoothing.
+
+### Model Fitting
+
+5 types of logistic models were considered in this report, and then their performance based on repeated 5-fold cross-validation on the training set was assessed. These models included logistic regression with all of the covariates in the dataset, logistic regression with two-way interactions (in which the two-way interactions were chosen based off of the corresponding appendix section), logistic regression using forward stepwise regression, using PCA, and lastly non-parametric logistic regression using splines. The goal was to select the model with the optimal 'trade-off' between prediction performance, parsimony, and interpretability.
+
+### Model Assumptions
+
+Logistic regression is a fully parametric approach which assumes a linear relationship between the log-odds of response and the predictor variables. In practice, this assumption may be relatively restrictive; occasionally we will need to incorporate higher order polynomial terms, introduce flexible basis functions like splines, or carry out other data transformations. In order to assess the validity of the linearity assumption, a logistic model was fit on the entire training set and each continuous covariate was plotted against the log-odds of response, denoted by the $x$ axis. Excerpts of code from this [article](http://www.sthda.com/english/articles/36-classification-methods-essentials/148-logistic-regression-assumptions-and-diagnostics-in-r/) were used to develop these diagnostic plots:
+
+```{r logistic assumptions}
+temp_data <- train[, !colnames(train) %in% c("DB", "TB", "ALP", "ALT", "AST", "TP")]
+
+model <- glm(factor(Diagnosis)~., data=temp_data, family="binomial")
+probabilities <- predict(model, type = "response")
+probabilities <- predict(model, type = "response")
+predicted.classes <- ifelse(probabilities > 0.5, "pos", "neg")
+
+
+mydata <- temp_data %>%
+  dplyr::select_if(is.numeric) 
+vars <- colnames(mydata)
+
+mydata <- mydata %>%
+  mutate(logit = log(probabilities/(1-probabilities))) %>%
+  gather(key = "vars", value = "predictor.value", -logit)
+
+ggplot(mydata, aes(logit, predictor.value))+
+  geom_point(size = 0.8, alpha = 0.5) +
+  geom_smooth(method = "lm", color = adjustcolor("red", 0.5), se=F) + 
+  theme_bw() + 
+  facet_wrap(~vars, scales = "free_y") +
+  xlab("Log Odds of Probability Estimates") +
+  ylab("Covariate")
+```
+
+In \textcolor{red}{red} we can see a simple linear regression line overlaid to each plot. With the exception of age and logTP, the linearity assumption seems relatively reasonable in all cases. This means the assumptions behind logistic regression are satisfied, and therefore it seems like a reasonable model to try. However, due to the potential non-linearity in a few covariates, we also try a non-parametric generalized additive model approach in order to potential accommodate more flexible shapes.
+
+### Results
+
+```{r fitting logistic, results="hide", eval=FALSE}
+set.seed(20552745)
+logistic.control <- trainControl(method = "repeatedcv", number = 5, repeats=5, savePredictions = T)
+
+# First, fit with vanilla GLM (main effect only)
+logistic.vanilla <- train(
+  x = predictors,
+  y = factor(binary.response),
+  method = "glm",
+  trControl = logistic.control,
+  family=binomial())
+
+# Now consider interaction
+logistic.interaction <- train(
+  factor(Diagnosis)~Age+factor(Gender)+logTB+logDB+logALP+logALT+logAST+logTP+ALB+RAG+
+                   factor(Gender)*logTB + factor(Gender)*logDB + factor(Gender)*logAST + factor(Gender)*ALB +
+                   Age*logTB + Age*logDB + Age*logTP + Age*ALB + Age*RAG, data=train,
+  method = "glm", trControl = logistic.control, family=binomial())
+
+# Now consider interaction and variable selection
+logistic.interaction.varselect <- train(
+  factor(Diagnosis)~Age+factor(Gender)+logTB+logDB+logALP+logALT+logAST+logTP+ALB+RAG+
+                   factor(Gender)*logTB + factor(Gender)*logDB + factor(Gender)*logAST + factor(Gender)*ALB +
+                   Age*logTB + Age*logDB + Age*logTP + Age*ALB + Age*RAG, data=train,
+  method = "glmStepAIC", trControl = logistic.control, family=binomial(), importance=T)
+
+# Do PCA and interaction
+logistic.pca <- train(
+  factor(Diagnosis)~Age+factor(Gender)+logTB+logDB+logALP+logALT+logAST+logTP+ALB+RAG+
+                   factor(Gender)*logTB + factor(Gender)*logDB + factor(Gender)*logAST + factor(Gender)*ALB +
+                   Age*logTB + Age*logDB + Age*logTP + Age*ALB + Age*RAG, data=train,
+  method = "glm", trControl = logistic.control, family=binomial(), preProc = c("pca"))
+
+# Now try with non-parametric logistic
+logistic.smooth <- train(x = predictors, y = factor(binary.response),
+  method = "gamSpline",trControl = logistic.control,
+  family=binomial())
+```
+
+
+```{r logistic results}
+# Now, create summary tables; we want out-of-sample accuracy and Kappa values
+oos.errors <- c(round(getTrainPerf(logistic.vanilla)[1,1],3), 
+                round(getTrainPerf(logistic.interaction)[1,1],3), 
+                round(getTrainPerf(logistic.interaction.varselect)[1,1],3),
+                round(getTrainPerf(logistic.pca)[1,1],3),
+                round(getTrainPerf(logistic.smooth)[1,1],3))
+
+kappa.vals <- c(round(getTrainPerf(logistic.vanilla)[1,2],3), 
+                round(getTrainPerf(logistic.interaction)[1,2],3), 
+                round(getTrainPerf(logistic.interaction.varselect)[1,2],3),
+                round(getTrainPerf(logistic.pca)[1,2],3),
+                round(getTrainPerf(logistic.smooth)[1,2],3))
+
+labels <- c("Logistic Regression with Main Effects only", "Logistic Regression with Interactions", 
+            "Logistic Regression with Variable Selection", "Logistic Regression with PCA",
+            "Non-Parametric Logistic Regression")
+summary.table <- data.frame(labels, oos.errors, kappa.vals)
+colnames(summary.table) <- c("Model", "Mean Out of Sample Accuracy", "Mean Kappa Value")
+t1 <- tableGrob(summary.table, rows=NULL, theme=ttheme_default(base_size = 10))
+
+# Create accuracy and Kappa plot
+df <- data.frame(
+  Indices=rep(1:25, 5),
+  Accuracy=c(logistic.vanilla$resample$Accuracy, logistic.interaction$resample$Accuracy, 
+             logistic.interaction.varselect$resample$Accuracy, logistic.pca$resample$Accuracy,
+             logistic.smooth$resample$Accuracy),
+  Kappa = c(logistic.vanilla$resample$Kappa, logistic.interaction$resample$Kappa, 
+             logistic.interaction.varselect$resample$Kappa, logistic.pca$resample$Kappa,
+             logistic.smooth$resample$Kappa),
+  Model=c(rep("Logistic Regression with Main Effects only", 25),
+                rep("Logistic Regression with Interactions", 25),
+                rep("Logistic Regression with Variable Selection", 25),
+                rep("Logistic Regression with PCA", 25),
+                rep("Non-Parametric Logistic Regression", 25)))
+
+# Plot accuracy and Kappa values over the 25 folds, and display them with the summary table
+p1 <- ggplot(data = df, aes(x=Indices, y=Accuracy)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Prediction Accuracy by Model") + theme(legend.position="top") +
+  theme(plot.title = element_text(size=10), legend.text=element_text(size=8)) + guides(colour=guide_legend(nrow=2))
+
+p2 <- ggplot(data = df, aes(x=Indices, y=Kappa)) + geom_line(aes(colour=Model)) +
+  ggtitle("Out-of-Sample Kappa Values by Model") + 
+  theme(legend.position = "none", plot.title = element_text(size=10))
+
+mylegend<-g_legend(p1)
+
+grid.arrange(arrangeGrob(p1 + theme(legend.position="none"),
+                         p2 + theme(legend.position="none"),
+                         nrow=1), mylegend, t1,  nrow=3, heights=c(5, 2, 4))
+```
+
+We see very similar results between all 5 models in terms of mean out-of-sample accuracy among the 25 iterations. In terms of both the accuracy and $\kappa$ trend lines, we note that these results are quite volatile relative to some other models examined, particularly in terms of the $\kappa$ values. Though the prediction accuracy is relatively high, the $\kappa$ values suggest none of these models are particularly effective predictors here. The test errors are relatively similar but it seems that introducing the two-way interactions seems to lead to a sizable increase in accuracy.
+
+Since the results are similar across all 5 models, the most sensible choice is to select the logistic model involving variable selection. This model is more parsimonious than the main effect or interaction models, and more interpretable than a model relying on PCA or non-parametric methods. The trade-off is relatively minimal in terms of $\kappa$ and prediction accuracy compared the non-parametric logistic regression, but we retain a more interpretable form that could be better explained to clinicians and patients. These results are relatively expected given the linearity assumption was relatively satisfied. Examining the chosen model more thoroughly, we see that Age, logALP, logALT, logTP, ALB and Age:LogTB were maintained in the final model. Looking at variable importance:
+
+```{r fig.height=3, fig.width=8}
+# Extract variable importance, re-scale then sort
+logistic.importance <- varImp(logistic.interaction.varselect$finalModel)
+logistic.importance <- logistic.importance/max(logistic.importance)*100
+logistic.importance <- data.frame(rownames(logistic.importance), logistic.importance$Overall)
+colnames(logistic.importance) <- c("Variable", "Importance")
+
+ggplot(data=logistic.importance, aes(x=reorder(Variable, Importance), y=Importance)) + 
+  geom_bar(stat="identity", fill = adjustcolor("deepskyblue4", 0.8)) + coord_flip() +
+  ylab("Relative Variable Importance") + xlab("Covariate")
+```
+
+Clearly logALT is the most important variable, however the remaining variables are all moderately important which is unlike some of the other models examined. This means the forward variable selection approach worked rather well here, as we maintain good predictive accuracy and only model predictors which are important to the response.
+
+\newpage
+
+## Appendix C: Code
+
+Please see the attached file with all of the code used to generate this report.
+
+\newpage
+
+# References
+
+Ahirwar, R., & Mondal, P. R. (2018, September 21). Prevalence of obesity in India: A systematic review. Retrieved November 16, 2019, from https://www.sciencedirect.com/science/article/pii/S1871402118303655.
+
+Albumin. (2019, July 29). Retrieved November 19, 2019, from https://labtestsonline.org/tests/albumin.
+
+Alcoholism in India. (2019, October 30). Retrieved from https://alcoholrehab.com/alcoholism/alcoholism-in-india/.Cunha, J. P. (2019, July 3). 
+
+Alkaline Phosphatase (ALP). (2019, November 13). Retrieved November 19, 2019, from https://labtestsonline.org/tests/alkaline-phosphatase-alp.
+
+ALT Blood Test: MedlinePlus Lab Test Information. (2019, November 1). Retrieved November 19, 2019, from https://medlineplus.gov/lab-tests/alt-blood-test/.
+
+Aspartate Aminotransferase (AST) Test (aka SGOT): High vs. Low Levels. (2019, May 15). Retrieved November 19, 2019, from https://www.webmd.com/a-to-z-guides/aspartate_aminotransferse-test#1.
+
+Bilirubin test. (2018, November 6). Retrieved November 19, 2019, from https://www.mayoclinic.org/tests-procedures/bilirubin/about/pac-20393041.
+
+Blocka, K. (2018, July 26). ALT (Alanine Aminotransferase) Test. Retrieved November 19, 2019, from https://www.healthline.com/health/alt.
+
+Cunha, J. P. (2019, July 3). What Is Cirrhosis of the Liver? Symptoms,Treatment, Causes & Stages. Retrieved November 16, 2019, from https://www.medicinenet.com/cirrhosis/article.htm.
+
+Guy, J., & Peters, M. G. (2013, October). Liver disease in women: the influence of gender on epidemiology, natural history, and patient outcomes. Retrieved November 19, 2019, from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3992057/.
+
+Hastie, T., Tibshirani, R. & Friedman, J. (2009). The Elements of Statistical Learning: Data Mining, Inference, and Prediction, 2nd Edition. New York, NY: Springer. 
+
+Hoffman, M. (2019, May 18). Liver (Anatomy): Picture, Function, Conditions, Tests, Treatments. Retrieved November 16, 2019, from https://www.webmd.com/digestive-disorders/picture-of-the-liver#1.
+
+Is liver disease the next major lifestyle disease of India after diabetes and BP? - Times of India. (2017, April 11). Retrieved November 16, 2019, from https://timesofindia.indiatimes.com/life-style/health-fitness/health-news/is-liver-disease-the-next-major-lifestyle-disease-of-india-after-diabetes-and-bp/articleshow/58122706.cms.
+
+Kang, H. (2013, May 24). The Prevention and Handling of the Missing Data. Retrieved November 28, 2019, from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3668100/.
+
+Kim, I. H., Kisseleva, T., & Brenner, D. A. (2015, May). Aging and liver disease. Retrieved November 19, 2019, from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4736713/.
+
+Kuhn, M. (2009, June 30). Variable Selection Using The caret Package. Retrieved November 26, 2019, from https://r-forge.r-project.org/scm/viewvc.php/*checkout*/pkg/caret/inst/doc/caretSelection.pdf?revision=77&root=caret&pathrev=90.
+
+Liver disease. (2018, March 13). Retrieved November 16, 2019, from https://www.mayoclinic.org/diseases-conditions/liver-problems/symptoms-causes/syc-20374502.
+
+Liver Disease in India. (n.d.). Retrieved from https://www.worldlifeexpectancy.com/india-liver-disease.
+
+Liver function tests. (2019, June 13). Retrieved November 19, 2019, from https://www.mayoclinic.org/tests-procedures/liver-function-tests/about/pac-20394595.
+
+Lutins, E. (2017, September 5). DBSCAN: What is it? When to Use it? How to use it. Retrieved December 1, 2019, from https://towardsdatascience.com/best-clustering-algorithms-for-anomaly-detection-d5b7412537c8
+
+McHugh M. L. (2012). Interrater reliability: the kappa statistic. Biochemia medica, 22(3), 276-282.
+
+Narasimhan, G. (2016, April). Living donor liver transplantation in India. Retrieved November 16, 2019, from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4824736/.
+
+Pati, S., Sharma, K., Zodpey, S., Chauhan, K., & Dobe, M. (2012, June 24). Health promotion education in India: present landscape and future vistas. Retrieved November 16, 2019, from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4776916/.
+
+Raypole, C. (2019, March 21). Liver Diseases: List of Problems, General Symptoms, Diagnosis, More. Retrieved November 16, 2019, from https://www.healthline.com/health/liver-diseases#treatment.
+
+Sander, J., Ester, M., Kriegel, H., & Xu, X (1998, June). Density-based clustering in spatial databases:
+The algorithm GDBSCAN and its applications. Data Mining and Knowledge Discovery 2, 2 (1998), 169-194. Retrieved December 1, 2019, from https://link.springer.com/article/10.1023%2FA%3A1009745219419. 
+
+Slightam, C. (2016, December 1). Total Protein Test. Retrieved November 19, 2019, from https://www.healthline.com/health/total-protein#proteins.
+
+Sterne et al. (2009, January 30). Multiple Imputation for Missing Data in Epidemiological and Clinical Research: Potential and Pitfalls. Retrieved November 28, 2019, from https://www.bmj.com/content/338/bmj.b2393. 
+
+Vora, P. (2017, January 3). India is discarding needles but reusing syringes and this is spreading disease. Retrieved November 16, 2019, from https://scroll.in/pulse/813346/docs-reusing-syringes-improper-biomedical-waste-disposal-raise-fear-about-recycling-of-syringes.
+
+Wedro, B. (2019, November 7). Liver Disease Symptoms, Signs, Diet & Treatment. Retrieved November 16, 2019, from https://www.medicinenet.com/liver_disease/article.htm.
+
+What Is Cirrhosis of the Liver? Symptoms,Treatment, Causes & Stages. Retrieved November 16, 2019, from https://www.medicinenet.com/cirrhosis/article.htm.
